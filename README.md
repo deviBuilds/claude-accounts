@@ -113,7 +113,9 @@ initial authorization; a CLI token cannot log you into Desktop.
 Use Up/Down, Enter and Esc. Switching Desktop saves the outgoing account before
 restoring the target. The active account does not offer a redundant Switch action.
 Expired CLI access tokens get one background renewal attempt while the TUI is open;
-that attempt uses a small model request and can consume usage. A genuinely expired
+that attempt uses a small model request and can consume usage. During onboarding,
+a verified existing or renewed CLI login automatically advances setup; the CLI
+sign-in actions are hidden while renewal is in progress. A genuinely expired
 or revoked login still requires browser sign-in. You can retry network failures.
 
 Account cards show 5-hour and weekly percentages **used**, local reset times and

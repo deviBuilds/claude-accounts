@@ -224,7 +224,7 @@ class TuiTests(unittest.TestCase):
         with patch.object(self.app, 'launch_cli') as launch:
             self.app.poll()
             launch.assert_not_called()
-        self.assertEqual(self.app.wizard['stage'], 'desktop')
+        self.assertEqual(self.app.wizard['stage'], 'finish')
         self.assertIsNone(self.app.deferred_action)
 
     def test_failed_desktop_verification_returns_to_sign_in_instead_of_retry_loop(self):
@@ -377,6 +377,63 @@ class TuiTests(unittest.TestCase):
         self.assertEqual(row['cli_state'], 'ready')
         self.assertEqual(row['refresh_id'], 'new')
         self.assertIsNone(self.app.modal)
+
+    def test_automatic_refresh_advances_onboarding_without_manual_verification(self):
+        for components, active, saved, pending, expected in [
+                (['cli', 'desktop'], False, False, False, 'desktop'),
+                (['cli', 'desktop'], True, False, False, 'finish'),
+                (['cli', 'desktop'], True, True, False, 'complete'),
+                (['cli', 'desktop'], False, False, True, 'finish'),
+                (['cli'], False, False, False, 'complete')]:
+            with self.subTest(components=components, active=active, saved=saved, pending=pending):
+                self.app = tui.App(self.screen, demo=True)
+                self.app.components = components
+                self.app.label = 'a'
+                row = self.app.account
+                row.update(cli_state='expired', refresh_id='old', desktop_active=active,
+                           desktop_saved=saved, pending=pending)
+                self.app.state['active_account'] = 'a-id' if active else 'other-id'
+                self.app.begin_setup()
+                self.assertEqual(self.app.wizard['stage'], 'cli')
+                self.assertIn('existing CLI login', self.app.header()[0])
+                self.assertFalse({'wizard_cli', 'wizard_auth'} & {r[0] for r in self.app.items()})
+                self.assertIsNone(self.app.pending_cli_check)
+                worker = SimpleNamespace(label='a', generation='old', events=tui.queue.Queue())
+                self.app.cli_worker = worker
+                worker.events.put({'label': 'a', 'before_id': 'old', 'refresh_id': 'new',
+                                   'cli_state': 'ready', 'cli_detail': 'Refreshed.',
+                                   'email': 'existing@example.test', 'account': 'a-id',
+                                   'expires_at': time.time()+3600})
+                with patch.object(self.app, 'launch_cli') as launch:
+                    self.app.poll_cli_refresh()
+                    launch.assert_not_called()
+                self.assertEqual(self.app.wizard['stage'], expected)
+                self.assertIsNone(self.app.modal)
+
+    def test_status_detection_advances_cli_step_only_for_a_verified_selected_profile(self):
+        self.app.label = 'a'
+        self.app.begin_setup()
+        for state in ('missing', 'expired', 'refreshing', 'unverified', 'sign_in_required'):
+            self.app.account['cli_state'] = state
+            self.app.status_ready()
+            self.assertEqual(self.app.wizard['stage'], 'cli')
+        self.app.account.update(cli_state='ready', desktop_active=False)
+        self.app.deferred_action = ('wizard', 'a', 'cli', 'wizard_cli')
+        self.app.status_ready()
+        self.assertEqual(self.app.wizard['stage'], 'desktop')
+        self.assertIsNone(self.app.deferred_action)
+
+    def test_failed_automatic_refresh_keeps_cli_step_and_offers_sign_in(self):
+        self.app.label = 'a'
+        self.app.account.update(cli_state='expired', refresh_id='old')
+        self.app.begin_setup()
+        worker = SimpleNamespace(label='a', generation='old', events=tui.queue.Queue())
+        self.app.cli_worker = worker
+        worker.events.put({'label': 'a', 'before_id': 'old', 'refresh_id': 'old',
+                           'cli_state': 'sign_in_required', 'cli_detail': 'Sign in again.'})
+        self.app.poll_cli_refresh()
+        self.assertEqual(self.app.wizard['stage'], 'cli')
+        self.assertEqual(self.app.items()[0][0], 'wizard_cli')
 
 
 class StatusTests(unittest.TestCase):

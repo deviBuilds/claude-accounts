@@ -225,6 +225,25 @@ class App:
         if self.desktop_signature() != self.desktop_seen:
             self.refresh()
 
+    def advance_cli_setup(self):
+        row = self.account or {}
+        if self.page != 'wizard' or self.wizard['stage'] != 'cli' or row.get('cli_state') != 'ready':
+            return False
+        if 'desktop' not in self.components:
+            stage = 'complete'
+        elif row.get('desktop_active') and row.get('desktop_saved') and not row.get('pending'):
+            stage = 'complete'
+        elif row.get('pending') or row.get('desktop_active'):
+            stage = 'finish'
+        else:
+            stage = 'desktop'
+        self.wizard['stage'], self.cursor = stage, 0
+        self.notice = 'CLI login verified: ' + str(row.get('email') or self.label)
+        self.pending_cli_check = None
+        # A login action queued during status loading no longer applies.
+        self.deferred_action = None
+        return True
+
     def status_ready(self):
         if self.onboard:
             self.onboard = False
@@ -241,9 +260,7 @@ class App:
                     self.start_cli_refresh(row)
                 return
             if row and row['cli_state'] == 'ready':
-                self.wizard['stage'] = 'desktop' if 'desktop' in self.components else 'complete'
-                self.cursor = 0
-                self.notice = 'CLI verified: ' + row['email']
+                self.advance_cli_setup()
             else:
                 self.message('CLI sign-in needs attention', [row.get('cli_detail', '') if row else 'Account status is unavailable.',
                                                           'Retry sign-in or check the existing login to continue.'])
@@ -254,6 +271,7 @@ class App:
                 self.cursor = 0
                 self.notice = ('Desktop login is already saved.' if self.wizard['stage'] == 'complete'
                                else 'Desktop sign-in detected. Choose Verify and finish setup to save it.')
+        self.advance_cli_setup()
 
     def apply_refresh_results(self):
         for row in self.state.get('accounts', []):
@@ -286,11 +304,9 @@ class App:
             if self.pending_cli_check == worker.label:
                 self.pending_cli_check = None
                 if self.page == 'wizard' and self.label == worker.label:
-                    if result['cli_state'] == 'ready':
-                        self.wizard['stage'] = ('finish' if self.account.get('pending') else 'desktop') if 'desktop' in self.components else 'complete'
-                        self.cursor = 0
-                    else:
+                    if result['cli_state'] != 'ready':
                         self.message('CLI sign-in needs attention', [result['cli_detail']])
+            self.advance_cli_setup()
         if self.demo or self.worker or self.modal or self.cli_worker:
             return
         if self.refresh_pending:
@@ -420,8 +436,8 @@ class App:
                 rows = [('wizard_cli', 'Open CLI to sign in', 'Use /login in Claude, then /exit to return and verify'),
                         ('wizard_auth', 'Browser sign-in (alternative)', 'Run Claude auth login and return here when finished'),
                         ('verify_cli', 'Check existing CLI login', 'Continue if this profile is already signed in')]
-                if self.account and self.account.get('cli_state') == 'expired':
-                    rows.insert(0, ('cli', 'Refresh existing CLI login', 'Open Claude and use /exit to return'))
+                if self.account and self.account.get('cli_state') in ('expired', 'refreshing'):
+                    rows = [('verify_cli', 'Check login status', 'Your existing CLI login is being renewed automatically')]
             elif stage == 'desktop':
                 rows = [('prepare', 'Open Desktop sign-in', 'Preserve the current login and prepare this account')]
             elif stage == 'finish':
@@ -631,6 +647,10 @@ class App:
         elif 'desktop' not in self.components:
             titles['cli'] = 'CLI sign-in'
             descriptions['complete'] = [f'CLI is ready for {who}.', f'Run: claude-accounts --cli {self.label}', 'Desktop was not part of this setup.']
+        if stage == 'cli' and a.get('cli_state') in ('expired', 'refreshing'):
+            titles['cli'] = 'Checking your existing CLI login'
+            descriptions['cli'] = [f'Profile: {self.label}. An existing CLI login was detected.',
+                                   'Renewing and verifying it automatically. No sign-in is needed while this runs.']
         return titles[stage], descriptions[stage]
 
     def fill(self, y, x, width, role):
