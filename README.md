@@ -86,7 +86,9 @@ installer writes modules to `~/.local/lib/claude-accounts` and shell launchers t
 3. If Desktop was selected, choose **Open Desktop sign-in** and sign into the
    intended account. With both apps selected, use the same account in each.
    A first Desktop launch initializes its own data directory.
-4. Choose **Verify and finish setup**. Desktop closes gracefully to flush its login,
+4. When the matching login is detected, choose **Save Desktop login and finish**;
+   otherwise choose **Verify and finish setup** after signing in. If running,
+   Desktop closes gracefully to flush its login,
    the manager verifies the encrypted login, saves its profile, and reopens it.
    With both apps selected, it also checks that the CLI and Desktop identities match.
    Desktop-only profiles display your chosen label because a cookie verifies the

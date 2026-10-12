@@ -270,7 +270,7 @@ class App:
                 self.wizard['stage'] = 'complete' if row.get('desktop_saved') and not row.get('pending') else 'finish'
                 self.cursor = 0
                 self.notice = ('Desktop login is already saved.' if self.wizard['stage'] == 'complete'
-                               else 'Desktop sign-in detected. Choose Verify and finish setup to save it.')
+                               else 'Desktop sign-in detected. Save this login to finish setup.')
         self.advance_cli_setup()
 
     def apply_refresh_results(self):
@@ -441,8 +441,11 @@ class App:
             elif stage == 'desktop':
                 rows = [('prepare', 'Open Desktop sign-in', 'Preserve the current login and prepare this account')]
             elif stage == 'finish':
-                rows = [('finish', 'Verify and finish setup', 'Verify and save the signed-in Desktop account' if 'cli' not in self.components else 'Check Desktop matches the CLI, then save its login'),
-                        ('prepare', 'Open Desktop sign-in', 'Resume sign-in, or preserve the wrong account and prepare a fresh login')]
+                if self.account and self.account.get('desktop_active'):
+                    rows = [('finish', 'Save Desktop login and finish', 'Save the detected login for future account switching')]
+                else:
+                    rows = [('finish', 'Verify and finish setup', 'Verify and save the signed-in Desktop account' if 'cli' not in self.components else 'Check Desktop matches the CLI, then save its login'),
+                            ('prepare', 'Open Desktop sign-in', 'Resume sign-in, or preserve the wrong account and prepare a fresh login')]
             elif stage == 'complete':
                 return [('done', 'Done — back to accounts', '')]
             else:
@@ -651,6 +654,12 @@ class App:
             titles['cli'] = 'Checking your existing CLI login'
             descriptions['cli'] = [f'Profile: {self.label}. An existing CLI login was detected.',
                                    'Renewing and verifying it automatically. No sign-in is needed while this runs.']
+        if stage == 'finish' and a.get('desktop_active'):
+            titles['finish'] = ('Step 2 of 2' if 'cli' not in self.components else 'Step 3 of 3') + ' — Save Desktop login'
+            descriptions['finish'] = [f'Desktop is already signed in as {who}.',
+                                      'Save this existing login to use it for future account switching.',
+                                      'Desktop briefly closes and reopens while saving.' if self.state.get('desktop_running')
+                                      else 'Desktop can stay closed while its login is saved.']
         return titles[stage], descriptions[stage]
 
     def fill(self, y, x, width, role):
