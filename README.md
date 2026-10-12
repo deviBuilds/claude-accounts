@@ -91,8 +91,12 @@ installer writes modules to `~/.local/lib/claude-accounts` and shell launchers t
    Desktop closes gracefully to flush its login,
    the manager verifies the encrypted login, saves its profile, and reopens it.
    Saving checks the live process state first: an open app gets a **Close Desktop
-   and save** confirmation. Remaining Desktop sessions get closing instructions
-   and **Retry save**; crash reporters do not block a save. A closed app stays closed.
+   and save** confirmation. If only background tasks remain, choose **Stop tasks
+   and save**. The manager stops Desktop tasks automatically, first requesting normal
+   termination and then force-stopping tasks that do not exit. It waits for them to
+   stop before saving; unrelated standalone CLI sessions and crash reporters are
+   left alone. A closed app stays closed. If shutdown is denied, the error explains
+   the cause and setup progress is kept for retrying.
    With both apps selected, it also checks that the CLI and Desktop identities match.
    Desktop-only profiles display your chosen label because a cookie verifies the
    account ID but does not provide an email address.

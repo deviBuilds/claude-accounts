@@ -401,10 +401,12 @@ class App:
             self.check_desktop_state()
         except (RuntimeError, OSError):
             self.state.update(desktop_running=None, desktop_background=None)
-        self.confirm('retry_save:' + action, 'Close Claude Desktop to save',
-                     ['Saving needs Claude Desktop and its active sessions to stop first.',
-                      'Quit Claude Desktop with Cmd+Q. If it is already closed, stop any remaining Desktop sessions.',
-                      'Then press Enter to retry saving. Desktop will be closed gracefully if it is open.',
+        reason = next((line.split('DESKTOP_BUSY:', 1)[1].strip()
+                       for line in reversed(self.logs) if 'DESKTOP_BUSY:' in line),
+                      'Some Desktop tasks could not be stopped.')
+        self.confirm('retry_save:' + action, 'Desktop could not finish stopping',
+                     [reason,
+                      'Retry to stop the remaining Desktop tasks and save the login.',
                       'Your login and setup progress are kept. No profile files were changed.'])
 
     def request_desktop_save(self, action):
@@ -419,10 +421,14 @@ class App:
         if state['running']:
             self.confirm('close_save:' + action, 'Close Desktop and save?',
                          ['Claude Desktop is open. Saving its login requires closing it first.',
-                          'Continue to quit Desktop gracefully, save the login, and reopen it.',
+                          'Continue to quit Desktop, stop any leftover tasks, save the login, and reopen it.',
                           'Running Desktop sessions will pause.'])
         elif state['background']:
-            self.desktop_save_blocked(action)
+            self.confirm('stop_save:' + action, 'Stop background tasks and save?',
+                         ['The Desktop app is closed, but some of its tasks are still running.',
+                          'Continue to stop those tasks automatically and save the login. '
+                          'Tasks that do not exit normally will be force-stopped.',
+                          'Desktop stays closed. Standalone CLI sessions are left running.'])
         else:
             self.start(action)
 
@@ -593,7 +599,7 @@ class App:
         self.job = 'onboard:' + action
 
     def start(self, action):
-        if action.startswith(('close_save:', 'retry_save:')):
+        if action.startswith(('close_save:', 'stop_save:', 'retry_save:')):
             action = action.split(':', 1)[1]
         if action in ('finish', 'finish-desktop'):
             self.start_onboarding(action)
@@ -709,7 +715,7 @@ class App:
             descriptions['finish'] = [f'Desktop is already signed in as {who}.',
                                       'Save this existing login to use it for future account switching.',
                                       'You will be asked to close Desktop before saving.' if self.state.get('desktop_running')
-                                      else 'Desktop background tasks must stop before saving.' if self.state.get('desktop_background')
+                                      else 'Saving will stop the remaining Desktop background tasks.' if self.state.get('desktop_background')
                                       else 'Desktop can stay closed while its login is saved.']
         return titles[stage], descriptions[stage]
 
@@ -950,6 +956,8 @@ class App:
                  'recover': 'Recover', 'sync': 'Sync history'}.get(action, 'Continue')
         if action and action.startswith('close_save:'):
             label = 'Close Desktop and save'
+        elif action and action.startswith('stop_save:'):
+            label = 'Stop tasks and save'
         elif action and action.startswith('retry_save:'):
             label = 'Retry save'
         primary = ' Enter: ' + (label if kind == 'confirm' else 'Close') + ' '

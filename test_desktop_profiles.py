@@ -3,6 +3,9 @@ import contextlib
 import io
 import json
 import os
+import signal
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -35,24 +38,106 @@ class DesktopLifecycleTests(unittest.TestCase):
             dp.quit_app()
             run.assert_not_called()
 
-    def test_orphaned_session_child_keeps_save_blocked_without_force_killing(self):
+    def test_orphaned_child_is_stopped_and_standalone_cli_is_untouched(self):
         initial = [(10, 1, dp.APP + '/Contents/MacOS/Claude'), (21, 10, '/usr/bin/node')]
-        orphan = [(21, 1, '/usr/bin/node')]
-        with patch.object(dp, 'process_records', side_effect=[initial, initial] + [orphan]*100), \
+        orphan = [(21, 1, '/usr/bin/node'), (30, 1, '/usr/local/bin/claude')]
+        with patch.object(dp, 'process_records', side_effect=[initial] + [orphan]*31 + [[]]), \
+             patch.object(dp, 'process_identity', side_effect=lambda pid: str(pid)), \
              patch.object(dp.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run, \
              patch.object(dp.time, 'sleep'), patch.object(dp.os, 'kill') as kill:
-            with self.assertRaisesRegex(dp.DesktopBusyError, 'DESKTOP_BUSY:'):
-                dp.quit_app()
+            dp.quit_app()
             self.assertEqual(run.call_args.args[0][0], 'osascript')
+            kill.assert_called_once_with(21, signal.SIGTERM)
+
+    def test_stubborn_tasks_are_force_stopped_before_returning(self):
+        records = [(20, 1, dp.APP + '/Contents/Helper')]
+        alive = True
+        def kill(pid, sig):
+            nonlocal alive
+            if sig == signal.SIGKILL:
+                alive = False
+        with patch.object(dp, 'process_records', side_effect=lambda: records if alive else []), \
+             patch.object(dp, 'process_identity', return_value='original'), \
+             patch.object(dp.time, 'sleep'), patch.object(dp.os, 'kill', side_effect=kill) as send:
+            dp.quit_app()
+            self.assertEqual(send.call_args_list, [unittest.mock.call(20, signal.SIGTERM),
+                                                  unittest.mock.call(20, signal.SIGKILL)])
+
+    def test_reused_orphan_pid_and_its_children_are_not_signalled(self):
+        initial = [(10, 1, dp.APP + '/Contents/MacOS/Claude'), (21, 10, '/usr/bin/node')]
+        reused = [(21, 1, '/usr/bin/node'), (22, 21, '/usr/bin/node')]
+        with patch.object(dp, 'process_records', side_effect=[initial, reused]), \
+             patch.object(dp, 'process_identity', side_effect=['main birth', 'old birth', 'new birth']), \
+             patch.object(dp.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), \
+             patch.object(dp.os, 'kill') as kill:
+            dp.quit_app()
+            kill.assert_not_called()
+
+    def test_shutdown_permission_failure_prevents_save(self):
+        records = [(20, 1, dp.APP + '/Contents/Helper')]
+        with patch.object(dp, 'process_records', return_value=records), \
+             patch.object(dp, 'process_identity', return_value='original'), \
+             patch.object(dp.os, 'kill', side_effect=PermissionError):
+            with self.assertRaisesRegex(dp.DesktopBusyError, 'macOS denied'):
+                dp.quit_app()
+
+    def test_manager_host_is_protected(self):
+        records = [(20, 1, dp.APP + '/Contents/Helper'), (os.getpid(), 20, '/usr/bin/python')]
+        with patch.object(dp, 'process_records', return_value=records), patch.object(dp.os, 'kill') as kill:
+            with self.assertRaisesRegex(dp.DesktopBusyError, 'separate Terminal'):
+                dp.quit_app()
             kill.assert_not_called()
 
     def test_main_app_quits_gracefully_and_ignores_surviving_crash_reporter(self):
         initial = [(10, 1, dp.APP + '/Contents/MacOS/Claude')]
         leftover = [(12, 1, dp.APP + '/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler')]
-        with patch.object(dp, 'process_records', side_effect=[initial, initial, leftover]), \
+        with patch.object(dp, 'process_records', side_effect=[initial, leftover]), \
+             patch.object(dp, 'process_identity', return_value='original'), \
              patch.object(dp.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run:
             dp.quit_app()
             self.assertEqual(run.call_args.args[0][0], 'osascript')
+
+    def test_apple_event_timeout_still_stops_owned_tasks(self):
+        records = [(10, 1, dp.APP + '/Contents/MacOS/Claude')]
+        alive = True
+        def kill(*args):
+            nonlocal alive
+            alive = False
+        with patch.object(dp, 'process_records', side_effect=lambda: records if alive else []), \
+             patch.object(dp, 'process_identity', return_value='original'), \
+             patch.object(dp.subprocess, 'run', side_effect=subprocess.TimeoutExpired('osascript', 15)), \
+             patch.object(dp.time, 'sleep'), patch.object(dp.os, 'kill', side_effect=kill) as send:
+            dp.quit_app()
+            send.assert_called_once_with(10, signal.SIGTERM)
+
+    def test_real_disposable_process_shutdown_keeps_unrelated_process_alive(self):
+        # Only these child PIDs are exposed to the shutdown routine. No real app control.
+        with tempfile.TemporaryDirectory() as directory:
+            ready = Path(directory) / 'ready'
+            target = subprocess.Popen([sys.executable, '-c',
+                'import signal,time,pathlib; signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                'pathlib.Path(__import__("sys").argv[1]).touch(); time.sleep(60)', str(ready)])
+            unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+            try:
+                import time
+                deadline = time.monotonic() + 5
+                while not ready.exists() and target.poll() is None and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(ready.exists())
+                def records():
+                    values = [(unrelated.pid, os.getpid(), '/usr/local/bin/claude')]
+                    if target.poll() is None:
+                        values.append((target.pid, os.getpid(), dp.APP + '/Contents/TestHelper'))
+                    return values
+                with patch.object(dp, 'process_records', side_effect=records):
+                    dp.quit_app()
+                self.assertEqual(target.wait(timeout=2), -signal.SIGKILL)
+                self.assertIsNone(unrelated.poll())
+            finally:
+                for child in (target, unrelated):
+                    if child.poll() is None:
+                        child.kill()
+                    child.wait(timeout=5)
 
 
 class ProfileTests(unittest.TestCase):

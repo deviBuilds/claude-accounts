@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import time
@@ -162,25 +163,104 @@ class DesktopBusyError(RuntimeError):
         super().__init__('DESKTOP_BUSY: ' + message)
 
 
+def process_identity(pid):
+    """Include the birth time so an exited task's reused PID is not signalled."""
+    result = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart=', '-o', 'comm='],
+                            capture_output=True, text=True)
+    if result.returncode == 1:  # The process exited between scans.
+        return None
+    if result.returncode:
+        raise DesktopBusyError('Cannot verify a remaining Desktop task. Retry saving.')
+    return result.stdout.strip() or None
+
+
 def quit_app():
-    owned = desktop_processes()
-    if app_running():
+    records = process_records()
+    # Never terminate the manager or the terminal/session hosting it.
+    parents = {pid: parent for pid, parent, _ in records}
+    protected = {os.getpid()}
+    parent = parents.get(os.getpid())
+    while parent and parent not in protected:
+        protected.add(parent)
+        parent = parents.get(parent)
+    known = {}
+
+    def remaining(records):
+        commands = {pid: command for pid, _, command in records}
+        for pid, (command, identity) in list(known.items()):
+            if commands.get(pid) != command or process_identity(pid) != identity:
+                del known[pid]
+        owned = desktop_processes(records) | set(known)
+        # Remember descendants even if their Desktop parent exits during shutdown.
+        while True:
+            children = {pid for pid, parent, _ in records if parent in owned}
+            expanded = owned | children
+            if expanded == owned:
+                break
+            owned = expanded
+        # Crash reporters are deliberately excluded by desktop_processes.
+        owned = {pid for pid in owned if not commands[pid].endswith('/chrome_crashpad_handler')}
+        if owned & protected:
+            raise DesktopBusyError('Run Claude Accounts from a separate Terminal window, outside a Desktop session, '
+                                   'so its own host can stay open while Desktop stops.')
+        for pid in owned - known.keys():
+            identity = process_identity(pid)
+            if identity:
+                known[pid] = (commands[pid], identity)
+        return set(known)
+
+    def stop(pid, sig):
+        # Recheck immediately before signalling; never use process-name-wide kills.
+        if process_identity(pid) != known[pid][1]:
+            del known[pid]
+            return
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            known.pop(pid, None)
+        except PermissionError:
+            raise DesktopBusyError(f'macOS denied stopping Desktop task {pid}. No profile files changed.') from None
+
+    if not remaining(records):
+        return
+    if any(command == APP + '/Contents/MacOS/Claude' for _, _, command in records):
         print('Quitting Claude Desktop gracefully; this pauses its running sessions.', flush=True)
         try:
-            result = subprocess.run(['osascript', '-e', f'tell application id "{BUNDLE}" to quit'],
-                                    capture_output=True, timeout=35)
+            subprocess.run(['osascript', '-e', f'tell application id "{BUNDLE}" to quit'],
+                           capture_output=True, timeout=15)
         except subprocess.TimeoutExpired:
-            raise DesktopBusyError('Claude did not finish quitting. Quit it with Cmd+Q, then retry.') from None
-        if result.returncode:
-            raise DesktopBusyError('Claude did not quit. Quit it with Cmd+Q, then retry.')
-    for _ in range(100):
-        records = process_records()
-        live = owned.intersection(pid for pid, _, _ in records) | desktop_processes(records)
-        if not live:
-            return
-        time.sleep(0.1)
-    raise DesktopBusyError('Claude background tasks are still running. Quit Claude with Cmd+Q and stop its remaining sessions, '
-                           'then retry saving. No profile files changed.')
+            pass  # Continue with targeted shutdown if Apple Events cannot quit it.
+        for _ in range(30):
+            if not remaining(process_records()):
+                return
+            time.sleep(0.1)
+    print('Stopping remaining Claude Desktop background tasks before saving.', flush=True)
+    for sig, attempts in ((signal.SIGTERM, 50), (signal.SIGKILL, 20)):
+        sent = set()
+        for _ in range(attempts):
+            records = process_records()
+            live = remaining(records)
+            if not live:
+                return
+            if sig == signal.SIGKILL and not sent:
+                print('Force-stopping Desktop tasks that did not exit normally.', flush=True)
+            # Children first, so parents can reap them and flush their state.
+            parents = {pid: parent for pid, parent, _ in records}
+            def depth(pid):
+                seen = set()
+                while pid in parents and pid not in seen:
+                    seen.add(pid)
+                    pid = parents[pid]
+                return len(seen)
+            for pid in sorted(live, key=depth, reverse=True):
+                identity = (pid, known[pid][1])
+                if identity not in sent:
+                    stop(pid, sig)
+                    sent.add(identity)
+            time.sleep(0.1)
+    if remaining(process_records()):
+        raise DesktopBusyError('Desktop tasks did not stop after automatic shutdown. Retry saving. '
+                               'No profile files changed.')
 
 
 def open_app():
