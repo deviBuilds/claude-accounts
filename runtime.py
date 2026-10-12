@@ -18,3 +18,16 @@ def configure():
     if getattr(sys, 'frozen', False):
         import certifi
         os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+
+
+def interactive_command(command):
+    """Give macOS CLI runtimes a pollable PTY, including after curl | bash.
+
+    /dev/tty accepts reads but cannot be registered with kqueue on macOS.
+    Claude's Bun runtime needs a concrete PTY device. The system relay provides
+    one, forwards input/resizes, and returns the child's exit status. /dev/null
+    explicitly disables transcript storage (sign-in output may contain secrets).
+    """
+    if sys.platform == 'darwin':
+        return ['/usr/bin/script', '-q', '/dev/null', *command]
+    return command

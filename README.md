@@ -81,7 +81,10 @@ installer writes modules to `~/.local/lib/claude-accounts` and shell launchers t
    profile is named `a`.
 2. If CLI was selected, choose **Open CLI to sign in**, use `/login`, and then
    `/exit` to return to setup. A separate browser-login command is also available;
-   if it fails, the manager offers the interactive CLI without restarting. CLI-only
+   if it fails, the manager offers the interactive CLI without restarting. CLI launch
+   uses a fresh terminal connection, including immediately after the curl installer.
+   On a CLI error, its original output stays visible until you press Enter; no
+   sign-in transcript is recorded. CLI-only
    setup finishes here; the manager verifies its identity.
 3. If Desktop was selected, choose **Open Desktop sign-in** and sign into the
    intended account. With both apps selected, use the same account in each.

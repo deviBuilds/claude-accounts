@@ -160,6 +160,7 @@ class TuiTests(unittest.TestCase):
         self.app.demo = False
         with patch.object(tui.shutil, 'which', return_value='/bin/claude'), \
              patch.object(tui.subprocess, 'run') as run, \
+             patch('builtins.input', return_value='') as acknowledge, \
              patch('curses.def_prog_mode'), patch('curses.endwin'), \
              patch('curses.reset_prog_mode') as restore, \
              patch.object(self.app, 'refresh') as refresh, \
@@ -167,7 +168,7 @@ class TuiTests(unittest.TestCase):
             run.return_value.returncode = 0
             self.app.launch_cli('b', authenticate=True)
             command = run.call_args.args[0]
-            self.assertEqual(command[:4], ['/bin/claude', 'auth', 'login', '--claudeai'])
+            self.assertEqual(command, tui.runtime.interactive_command(['/bin/claude', 'auth', 'login', '--claudeai', '--email', self.app.account['email']]))
             self.assertEqual(run.call_args.kwargs['env']['CLAUDE_CODE_SAFE_MODE'], '1')
             self.assertEqual(run.call_args.kwargs['env']['CLAUDE_CONFIG_DIR'], str(Path.home() / '.claude-acct-b'))
             refresh.assert_called_once_with('verify_cli')
@@ -176,11 +177,12 @@ class TuiTests(unittest.TestCase):
             run.return_value.returncode = 1
             self.app.launch_cli('b', authenticate=True)
             refresh.assert_not_called()
+            acknowledge.assert_called_once()
             self.assertEqual(self.app.wizard['stage'], 'cli')
             self.assertIsNotNone(self.app.modal)
             self.assertEqual(self.app.modal[:2], ('confirm', 'wizard_cli'))
             self.app.key(10)
-            self.assertEqual(run.call_args.args[0], ['/bin/claude', '--safe-mode'])
+            self.assertEqual(run.call_args.args[0], tui.runtime.interactive_command(['/bin/claude', '--safe-mode']))
             self.assertEqual(run.call_args.kwargs['env']['CLAUDE_CONFIG_DIR'], str(Path.home() / '.claude-acct-b'))
 
     def test_new_profile_can_open_interactive_cli_before_status_has_loaded(self):

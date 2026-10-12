@@ -630,6 +630,7 @@ class App:
         env = {**cli_environment(label), 'CLAUDE_CODE_SAFE_MODE': '1'}
         if authenticate and self.account and '@' in (self.account.get('email') or ''):
             command += ['--email', self.account['email']]
+        command = runtime.interactive_command(command)
         result = 1
         self.logs = []
         curses.def_prog_mode()
@@ -643,6 +644,14 @@ class App:
                     result = subprocess.run(command, cwd=directory, env=env, check=False).returncode
             else:
                 result = subprocess.run(command, env=env, check=False).returncode
+            if result and result != 130:
+                # Keep the actual error visible before curses redraws over it.
+                # Do not record a transcript: auth URLs and codes can be sensitive.
+                print(f'\nClaude exited with status {result}. The CLI output above contains the error.', flush=True)
+                try:
+                    input('Press Enter to return to Claude Accounts… ')
+                except EOFError:
+                    pass
         except (OSError, KeyboardInterrupt) as error:
             self.logs = ['CLI returned: ' + clean(error)]
         finally:
@@ -1076,7 +1085,10 @@ def main(argv=None):
         if not executable:
             parser.error('Claude Code is not installed or not on PATH.')
         extra = args.cli_args[1:] if args.cli_args[:1] == ['--'] else args.cli_args
-        return subprocess.call([executable, *extra], env=env)
+        command = [executable, *extra]
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            command = runtime.interactive_command(command)
+        return subprocess.call(command, env=env)
     if args.cli_args:
         parser.error('CLI options require --cli LABEL')
     if sys.platform != 'darwin' and not args.demo:
