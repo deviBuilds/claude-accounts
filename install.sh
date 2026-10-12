@@ -39,10 +39,10 @@ main() {
     return 1
   fi
   # Pin both downloads to one release, avoiding a latest-release race.
-  base='https://github.com/deviBuilds/claude-accounts/releases/download/v0.2.0'
+  base='https://github.com/deviBuilds/claude-accounts/releases/download/v0.2.1'
   asset="claude-accounts-macos-$architecture"
   ca_workdir=$(mktemp -d "${TMPDIR:-/tmp}/claude-accounts-download.XXXXXX")
-  echo 'Downloading Claude Accounts v0.2.0…'
+  echo 'Downloading Claude Accounts v0.2.1…'
   curl --proto '=https' --tlsv1.2 -fSL --retry 3 --connect-timeout 15 --max-time 300 \
     "$base/$asset" -o "$ca_workdir/$asset"
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 15 --max-time 60 \

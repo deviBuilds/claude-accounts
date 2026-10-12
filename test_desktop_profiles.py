@@ -151,13 +151,19 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(self.account(self.root), self.ids['c'][0])
         self.assertFalse(self.manager.journal.exists())
 
-    def test_unsaved_target_and_unverified_outgoing_are_rejected(self):
+    def test_unsaved_target_is_rejected_and_unregistered_outgoing_is_preserved(self):
         with self.assertRaisesRegex(RuntimeError, 'No saved Desktop profile'):
             self.manager.switch('b')
         self.manager.identity = lambda p: self.ids['b']
-        with self.assertRaisesRegex(RuntimeError, 'no verified CLI profile'):
-            self.manager.switch('b', login=True)
-        self.quit.assert_not_called()
+        self.manager.switch('b', login=True)
+        index = self.manager.index()
+        label, saved = next(iter(index['profiles'].items()))
+        self.assertTrue(label.startswith('desktop-'))
+        self.assertEqual(saved['account'], self.ids['c'][0])
+        self.assertTrue(saved['desktopOnly'])
+        self.assertIsNone(self.account(self.root))
+        self.manager.switch(label)
+        self.assertEqual(self.account(self.root), self.ids['c'][0])
 
     def test_first_switch_saves_unsaved_outgoing_and_allows_return(self):
         self.manager.switch('b', login=True)
@@ -193,10 +199,24 @@ class ProfileTests(unittest.TestCase):
                 return self.ids['b']
             raise RuntimeError('No other verified CLI login')
         self.manager.identity = identity
-        with self.assertRaisesRegex(RuntimeError, 'no verified CLI profile'):
-            self.manager.switch('c')
-        self.assertEqual(self.manager.index(), original)
+        self.manager.switch('c')
+        index = self.manager.index()
+        self.assertEqual(index['profiles']['c'], original['profiles']['c'])
+        label, saved = next((name, p) for name, p in index['profiles'].items() if name != 'c')
+        self.assertTrue(label.startswith('desktop-'))
+        self.assertEqual(saved['account'], self.ids['b'][0])
+        self.assertEqual(self.account(self.root), self.ids['c'][0])
+        self.manager.switch(label)
         self.assertEqual(self.account(self.root), self.ids['b'][0])
+
+    def test_generated_desktop_label_does_not_overwrite_existing_cli_profile(self):
+        import hashlib
+        base = 'desktop-' + hashlib.sha256(self.ids['c'][0].encode()).hexdigest()[:8]
+        (self.home / ('.claude-acct-' + base)).mkdir()
+        self.manager.identity = lambda config: self.ids['b']
+        self.manager.switch('b', login=True)
+        self.assertIn(base + '-2', self.manager.index()['profiles'])
+        self.assertNotIn(base, self.manager.index()['profiles'])
 
     def test_switch_preview_and_lock(self):
         self.save_both()

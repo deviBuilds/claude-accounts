@@ -168,6 +168,7 @@ class TuiTests(unittest.TestCase):
             self.app.launch_cli('b', authenticate=True)
             command = run.call_args.args[0]
             self.assertEqual(command[:4], ['/bin/claude', 'auth', 'login', '--claudeai'])
+            self.assertEqual(run.call_args.kwargs['env']['CLAUDE_CODE_SAFE_MODE'], '1')
             self.assertEqual(run.call_args.kwargs['env']['CLAUDE_CONFIG_DIR'], str(Path.home() / '.claude-acct-b'))
             refresh.assert_called_once_with('verify_cli')
             restore.assert_called_once()
@@ -177,6 +178,81 @@ class TuiTests(unittest.TestCase):
             refresh.assert_not_called()
             self.assertEqual(self.app.wizard['stage'], 'cli')
             self.assertIsNotNone(self.app.modal)
+            self.assertEqual(self.app.modal[:2], ('confirm', 'wizard_cli'))
+            self.app.key(10)
+            self.assertEqual(run.call_args.args[0], ['/bin/claude', '--safe-mode'])
+            self.assertEqual(run.call_args.kwargs['env']['CLAUDE_CONFIG_DIR'], str(Path.home() / '.claude-acct-b'))
+
+    def test_new_profile_can_open_interactive_cli_before_status_has_loaded(self):
+        self.app.label = 'claude-zeno'
+        self.app.wizard = {'stage': 'cli'}
+        self.app.goto('wizard')
+        self.assertIsNone(self.app.account)
+        self.assertEqual(self.app.items()[0][0], 'wizard_cli')
+        with patch.object(self.app, 'launch_cli') as launch:
+            self.app.key(10)
+            launch.assert_called_once_with('claude-zeno')
+
+    def test_enter_during_status_check_is_retained_and_opens_cli_once(self):
+        self.app.label = 'claude-zeno'
+        self.app.wizard = {'stage': 'cli'}
+        self.app.goto('wizard')
+        events = tui.queue.Queue()
+        self.app.worker = SimpleNamespace(events=events)
+        self.app.job = 'status'
+        self.app.status_received = True
+        with patch.object(self.app, 'launch_cli') as launch:
+            self.app.key(10)
+            launch.assert_not_called()
+            self.assertIn('will open', self.app.notice)
+            events.put(('done', 0))
+            self.app.poll()
+            launch.assert_called_once_with('claude-zeno')
+            self.assertIsNone(self.app.deferred_action)
+
+    def test_queued_action_is_not_applied_to_a_different_setup_stage(self):
+        self.app.label = 'b'
+        self.app.wizard = {'stage': 'cli'}
+        self.app.goto('wizard')
+        events = tui.queue.Queue()
+        self.app.worker = SimpleNamespace(events=events)
+        self.app.job = 'status'
+        self.app.status_received = True
+        self.app.after_status = 'verify_cli'
+        self.app.key(10)
+        events.put(('done', 0))
+        with patch.object(self.app, 'launch_cli') as launch:
+            self.app.poll()
+            launch.assert_not_called()
+        self.assertEqual(self.app.wizard['stage'], 'desktop')
+        self.assertIsNone(self.app.deferred_action)
+
+    def test_failed_desktop_verification_returns_to_sign_in_instead_of_retry_loop(self):
+        self.app.label = 'b'
+        self.app.wizard = {'stage': 'finish'}
+        self.app.goto('wizard')
+        events = tui.queue.Queue()
+        events.put(('line', 'Desktop must be signed into the intended account.'))
+        events.put(('done', 1))
+        self.app.worker = SimpleNamespace(events=events)
+        self.app.job = 'onboard:finish'
+        with patch.object(self.app, 'refresh'):
+            self.app.poll()
+        self.assertEqual(self.app.wizard['stage'], 'desktop')
+        self.assertEqual(self.app.items()[0][0], 'prepare')
+
+    def test_new_profile_creation_refreshes_accounts_without_restart(self):
+        self.app.label = 'claude-zeno'
+        self.app.wizard = {'stage': 'name'}
+        self.app.goto('wizard')
+        events = tui.queue.Queue()
+        events.put(('done', 0))
+        self.app.worker = SimpleNamespace(events=events)
+        self.app.job = 'onboard:create'
+        with patch.object(self.app, 'refresh') as refresh:
+            self.app.poll()
+        self.assertEqual(self.app.wizard['stage'], 'cli')
+        refresh.assert_called_once_with()
 
     def test_resume_pending_setup_and_demo_never_mutates(self):
         self.app.dispatch('account:b')
@@ -210,10 +286,17 @@ class TuiTests(unittest.TestCase):
         self.assertEqual(self.app.wizard['stage'], 'desktop')
 
     def test_argument_and_environment_isolation(self):
-        inherited = {'CLAUDE_CONFIG_DIR': '/wrong', 'CLAUDE_CODE_OAUTH_TOKEN': 'not-a-real-token', 'PATH': '/bin'}
+        inherited = {'CLAUDE_CONFIG_DIR': '/wrong', 'CLAUDE_CODE_OAUTH_TOKEN': 'not-a-real-token', 'PATH': '/bin',
+                     'ANTHROPIC_BASE_URL': 'https://wrong.example.test', 'CLAUDE_CODE_USE_BEDROCK': '1',
+                     'CLAUDE_CODE_OAUTH_REFRESH_TOKEN': 'not-a-real-token'}
         env = tui.cli_environment('a', inherited)
         self.assertNotIn('CLAUDE_CONFIG_DIR', env)
         self.assertNotIn('CLAUDE_CODE_OAUTH_TOKEN', env)
+        self.assertNotIn('CLAUDE_CODE_OAUTH_REFRESH_TOKEN', env)
+        self.assertNotIn('ANTHROPIC_BASE_URL', env)
+        self.assertNotIn('CLAUDE_CODE_USE_BEDROCK', env)
+        self.assertNotIn('CLAUDE_CODE_SAFE_MODE', env)
+        self.assertEqual(tui.cli_environment('a', {'CLAUDE_CODE_SAFE_MODE': '1'})['CLAUDE_CODE_SAFE_MODE'], '1')
         self.assertEqual(inherited['CLAUDE_CONFIG_DIR'], '/wrong')
         self.assertEqual(tui.cli_environment('b', {}, Path('/tmp/test'))['CLAUDE_CONFIG_DIR'], '/tmp/test/.claude-acct-b')
         self.assertEqual(tui.helper_args('switch', 'b', True)[2:], ['--switch', 'b', '--dry-run'])

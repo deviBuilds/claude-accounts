@@ -10,10 +10,11 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import time
-from cli_refresh import RefreshWorker
+from cli_refresh import RefreshWorker, environment as profile_environment
 import account_usage
 import runtime
 import setup_options
@@ -41,13 +42,13 @@ def helper_args(action, label, preview=False):
 def cli_environment(label, environ=None, home=None):
     if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,31}', label):
         raise ValueError('Invalid account label')
-    env = dict(os.environ if environ is None else environ)
-    for key in ('CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'):
-        env.pop(key, None)
-    if label == 'a':
-        env.pop('CLAUDE_CONFIG_DIR', None)
+    source = os.environ if environ is None else environ
+    env = profile_environment(label, home or Path.home(), source)
+    # Ordinary --cli launches retain the user's customization preference.
+    if 'CLAUDE_CODE_SAFE_MODE' in source:
+        env['CLAUDE_CODE_SAFE_MODE'] = source['CLAUDE_CODE_SAFE_MODE']
     else:
-        env['CLAUDE_CONFIG_DIR'] = str((home or Path.home()) / ('.claude-acct-' + label))
+        env.pop('CLAUDE_CODE_SAFE_MODE', None)
     return env
 
 
@@ -115,6 +116,7 @@ class App:
         self.page, self.cursor, self.label = 'home', 0, None
         self.wizard, self.input_text = None, ''
         self.worker, self.job, self.after_status = None, None, None
+        self.deferred_action = None
         self.logs, self.modal, self.scroll = [], None, 0
         self.running = True
         self.notice = ''
@@ -339,17 +341,24 @@ class App:
                     else:
                         self.after_status = None
                         self.message('Could not refresh accounts', self.logs[-5:] or ['Try Refresh accounts again.'])
+                    deferred, self.deferred_action = self.deferred_action, None
+                    if deferred and not self.modal:
+                        page, label, stage, action = deferred
+                        if (self.page, self.label, (self.wizard or {}).get('stage')) == (page, label, stage):
+                            self.dispatch(action)
                 elif value:
                     self.message('Action needs attention', self.logs)
                     if job.startswith('onboard:'):
+                        if job in ('onboard:finish', 'onboard:finish-desktop'):
+                            self.wizard['stage'] = 'desktop'
+                            self.cursor = 0
                         self.refresh()
                 elif job.startswith('onboard:'):
                     action = job.split(':')[1]
                     self.wizard['stage'] = {'create': 'cli', 'prepare': 'finish', 'finish': 'complete', 'create-desktop': 'desktop', 'prepare-desktop': 'finish', 'finish-desktop': 'complete'}[action]
                     self.cursor = 0
                     self.notice = 'Profile created.' if action == 'create' else ''
-                    if action in ('prepare', 'finish', 'prepare-desktop', 'finish-desktop'):
-                        self.refresh()
+                    self.refresh()
                 else:
                     self.modal = ('result', None, 'Finished', self.logs[:])
                     self.scroll = 0
@@ -408,7 +417,8 @@ class App:
         if self.page == 'wizard':
             stage = self.wizard['stage']
             if stage == 'cli':
-                rows = [('wizard_auth', 'Sign in to CLI', 'Browser sign-in opens; you return here when finished'),
+                rows = [('wizard_cli', 'Open CLI to sign in', 'Use /login in Claude, then /exit to return and verify'),
+                        ('wizard_auth', 'Browser sign-in (alternative)', 'Run Claude auth login and return here when finished'),
                         ('verify_cli', 'Check existing CLI login', 'Continue if this profile is already signed in')]
                 if self.account and self.account.get('cli_state') == 'expired':
                     rows.insert(0, ('cli', 'Refresh existing CLI login', 'Open Claude and use /exit to return'))
@@ -416,7 +426,7 @@ class App:
                 rows = [('prepare', 'Open Desktop sign-in', 'Preserve the current login and prepare this account')]
             elif stage == 'finish':
                 rows = [('finish', 'Verify and finish setup', 'Verify and save the signed-in Desktop account' if 'cli' not in self.components else 'Check Desktop matches the CLI, then save its login'),
-                        ('prepare', 'Reopen Desktop', 'Resume the existing sign-in screen')]
+                        ('prepare', 'Open Desktop sign-in', 'Resume sign-in, or preserve the wrong account and prepare a fresh login')]
             elif stage == 'complete':
                 return [('done', 'Done — back to accounts', '')]
             else:
@@ -445,7 +455,7 @@ class App:
     def dispatch(self, action):
         if self.worker:
             return
-        if self.cli_worker and self.label == self.cli_worker.label and action in ('cli', 'auth', 'wizard_auth', 'setup', 'save', 'prepare', 'finish', 'verify_cli', 'retry_refresh'):
+        if self.cli_worker and self.label == self.cli_worker.label and action in ('cli', 'auth', 'wizard_auth', 'wizard_cli', 'setup', 'save', 'prepare', 'finish', 'verify_cli', 'retry_refresh'):
             self.notice = 'This CLI login is refreshing in the background. Please wait before using its login actions.'
             return
         if action.startswith('account:'):
@@ -480,10 +490,12 @@ class App:
                 self.start_cli_refresh(self.account, force=True)
         elif action == 'verify_cli':
             self.refresh('verify_cli')
-        elif action in ('cli', 'auth', 'wizard_auth'):
+        elif action in ('cli', 'auth', 'wizard_auth', 'wizard_cli'):
             if action == 'cli':
                 self.confirm(action, 'Open Claude CLI', ['Use /exit to return here after Claude refreshes its login.',
                                                       'This launch uses safe mode (custom hooks and plugins disabled).'])
+            elif action == 'wizard_cli':
+                self.launch_cli(self.label)
             else:
                 self.launch_cli(self.label, authenticate=True)
         elif action in ('prepare', 'finish', 'prepare-desktop', 'finish-desktop'):
@@ -521,7 +533,7 @@ class App:
             self.begin_setup()
             self.start_onboarding('finish')
             return
-        if action == 'cli':
+        if action in ('cli', 'wizard_cli'):
             self.launch_cli(self.label)
             return
         if self.demo:
@@ -540,14 +552,22 @@ class App:
             self.message('CLI unavailable', ['Could not find claude on PATH.'])
             return
         command = [executable, 'auth', 'login', '--claudeai'] if authenticate else [executable, '--safe-mode']
+        env = {**cli_environment(label), 'CLAUDE_CODE_SAFE_MODE': '1'}
         if authenticate and self.account and '@' in (self.account.get('email') or ''):
             command += ['--email', self.account['email']]
         result = 1
+        self.logs = []
         curses.def_prog_mode()
         curses.endwin()
         try:
-            print(f'Claude account {label}: ' + ('complete sign-in in your browser.' if authenticate else 'use /exit to return.'), flush=True)
-            result = subprocess.run(command, env=cli_environment(label), check=False).returncode
+            print(f'Claude account {label}: ' + ('complete sign-in in your browser.' if authenticate else
+                  'use /login to sign in, then /exit to return.' if self.page == 'wizard' else 'use /exit to return.'), flush=True)
+            # An auth command must not inherit project-specific settings or hooks.
+            if authenticate:
+                with tempfile.TemporaryDirectory(prefix='claude-account-login-') as directory:
+                    result = subprocess.run(command, cwd=directory, env=env, check=False).returncode
+            else:
+                result = subprocess.run(command, env=env, check=False).returncode
         except (OSError, KeyboardInterrupt) as error:
             self.logs = ['CLI returned: ' + clean(error)]
         finally:
@@ -559,9 +579,14 @@ class App:
                 curses.curs_set(0)
             except curses.error:
                 pass
-        if result:
-            self.message('CLI sign-in was not completed' if authenticate else 'CLI stopped',
-                         ['You can retry. Your profile and setup progress are kept.'] + self.logs[-2:])
+        if result and authenticate:
+            self.confirm('wizard_cli', 'Open CLI to finish sign-in?',
+                         [f'Browser sign-in exited with status {result}. Your profile is kept.',
+                          'Press Enter to open Claude here. Use /login, then /exit to return.',
+                          'If a browser selected the wrong account, choose the intended account before approving.'] + self.logs[-2:])
+        elif result:
+            self.message('CLI stopped', [f'Claude exited with status {result}. You can retry from this screen.',
+                         'Your profile and setup progress are kept.'] + self.logs[-2:])
         elif self.page == 'wizard':
             self.refresh('verify_cli')
         else:
@@ -584,10 +609,10 @@ class App:
                   'desktop': 'Step 2 of 3 — Desktop sign-in', 'finish': 'Step 3 of 3 — Verify and save',
                   'complete': 'Account setup complete'}
         descriptions = {
-            'name': ['Choose a short label, for example d or work. It creates claude-<label>.',
+            'name': ['Choose a profile label, for example work or zeno.',
                      'Existing CLI settings and local history are shared; the login is separate.'],
             'cli': [f'Profile: {self.label}. Sign in with the account you want to add.',
-                    'The official CLI stores the login in your macOS Keychain.'],
+                    'Open CLI here, use /login, then /exit to return. The login is verified automatically.'],
             'desktop': [f'CLI verified: {who}. Use the same account in Desktop.',
                         'Continuing may quit and reopen Desktop, pausing its running sessions.',
                         'Your outgoing login is preserved. Complete browser sign-in, then return here.'],
@@ -851,6 +876,17 @@ class App:
 
     def key(self, key):
         if self.worker:
+            # Status is read-only. Keep navigation responsive and retain Enter
+            # instead of silently swallowing a new profile's first login action.
+            if self.job == 'status' and not self.modal and not (self.page == 'wizard' and self.wizard['stage'] == 'name'):
+                rows = self.items()
+                if key in (curses.KEY_UP, ord('k'), curses.KEY_DOWN, ord('j')):
+                    delta = -1 if key in (curses.KEY_UP, ord('k')) else 1
+                    self.cursor = (self.cursor + delta) % max(1, len(rows))
+                    self.deferred_action = None
+                elif key in (10, 13, curses.KEY_ENTER) and rows:
+                    self.deferred_action = (self.page, self.label, (self.wizard or {}).get('stage'), rows[self.cursor][0])
+                    self.notice = 'Checking logins; your selection will open when ready.'
             return  # A profile transaction must finish before the UI can close.
         if self.modal:
             kind, action, _, _ = self.modal

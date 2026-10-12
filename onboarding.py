@@ -84,16 +84,18 @@ def prepare(manager, label):
         dp.open_app()
         print(f'Desktop already matches {expected["email"]}. Choose Verify and finish to save it.')
         return
-    if pending:
-        # Resuming must not discard a partially completed sign-in.
-        dp.open_app()
-        print(f'Resumed Desktop setup. Sign into {expected["email"]}, then choose Verify and finish.')
-        return
     if label in index['profiles']:
         if index['profiles'][label]['account'] != expected['account']:
             raise RuntimeError('The CLI login differs from the saved Desktop account for this label.')
         manager.switch(label)
         return
+    if pending and not current:
+        # Keep an unfinished browser flow, but never resume a known wrong login.
+        dp.open_app()
+        print(f'Resumed Desktop setup. Sign into {expected["email"]}, then choose Verify and finish.')
+        return
+    if pending:
+        print('Desktop is signed into a different account. Preserving it and opening a fresh sign-in.', flush=True)
     # Switching saves the outgoing account in the same transaction, including
     # an account that has never had a Desktop snapshot before.
     manager.switch(label, login=True)
@@ -121,7 +123,8 @@ def finish(manager, label):
         print('Checking the new Desktop login. Closing Desktop gracefully to save its sign-in state.', flush=True)
         dp.quit_app()
         if dp.desktop_account(manager.root) != expected['account']:
-            raise RuntimeError(f'Desktop must be signed into {expected["email"]}. Finish sign-in in Desktop, then retry.')
+            raise RuntimeError(f'Desktop must be signed into {expected["email"]}. Choose Open Desktop sign-in to prepare the correct account. '
+                               'If your browser selects another account automatically, choose a different account there before approving sign-in.')
         manager.save(label)
     finally:
         manager.identity = original
@@ -167,7 +170,7 @@ def prepare_desktop(manager, label):
     # On first setup, keep an already logged-in Desktop account for explicit saving.
     # For additional accounts, a registered outgoing profile is preserved by switch.
     registered = any(p['account'] == current for p in index['profiles'].values())
-    if pending or not current or not registered:
+    if not current or (not registered and not pending):
         dp.open_app()
         print('Sign into the intended account in Desktop, then verify and save it.')
         return

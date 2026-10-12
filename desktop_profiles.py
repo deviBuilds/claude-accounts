@@ -346,8 +346,16 @@ class Profiles:
                     outgoing[candidate] = known
                     break
             if not outgoing:
-                raise RuntimeError('Current Desktop login has no verified CLI profile. Add or refresh its CLI account first, '
-                                   'then retry. The current Desktop login has been kept intact.')
+                # A new user may already use Desktop with an account that has no
+                # CLI login. Its verified local cookie is enough to preserve it;
+                # never require signing that account into CLI just to switch away.
+                base = 'desktop-' + hashlib.sha256(current.encode()).hexdigest()[:8]
+                label, suffix = base, 2
+                reserved = set(discover(self.home, index)) | {name}
+                while label in reserved:
+                    label, suffix = f'{base}-{suffix}', suffix + 1
+                outgoing[label] = {'account': current, 'organization': None,
+                                   'email': None, 'desktopOnly': True}
         if dry:
             print(f'Would save current Desktop account {list(outgoing) or ["unsigned profile"]}, '
                   f'{"open a clean login for" if login else "restore"} {name}: {expected.get("email") or name}, and reopen Desktop.')

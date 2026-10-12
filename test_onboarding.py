@@ -115,13 +115,41 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(self.manager.index(), previous)
         self.open.assert_called_once()
 
-    def test_unregistered_outgoing_stays_intact(self):
+    def test_unregistered_outgoing_is_saved_without_requiring_its_cli_login(self):
         ob.create(self.manager, 'd')
         (self.manager.root / 'identity').write_text('unknown-id')
-        with self.assertRaisesRegex(RuntimeError, 'no verified CLI profile'):
-            ob.prepare(self.manager, 'd')
+        ob.prepare(self.manager, 'd')
+        index = self.manager.index()
+        saved = next(p for p in index['profiles'].values() if p['account'] == 'unknown-id')
+        self.assertTrue(saved['desktopOnly'])
+        snapshot = self.manager.snapshot_path(saved['snapshot']) / 'data'
+        self.assertEqual((snapshot / 'identity').read_text(), 'unknown-id')
+        self.assertFalse((self.manager.root / 'identity').exists())
+        self.assertEqual(index['pendingLogin']['label'], 'd')
+
+    def test_retry_pending_wrong_login_prepares_clean_profile_and_keeps_outgoing(self):
+        ob.create(self.manager, 'd')
+        ob.prepare(self.manager, 'd')
+        self.login('a')
+        (self.manager.root / 'recent-work').write_text('keep this')
+        ob.prepare(self.manager, 'd')
+        self.assertFalse((self.manager.root / 'identity').exists())
+        index = self.manager.index()
+        saved = self.manager.snapshot_path(index['profiles']['a']['snapshot']) / 'data'
+        self.assertEqual((saved / 'recent-work').read_text(), 'keep this')
+        self.assertEqual(index['pendingLogin']['label'], 'd')
+        self.login('d')
+        ob.finish(self.manager, 'd')
+        self.assertNotIn('pendingLogin', self.manager.index())
+
+    def test_retry_matching_login_does_not_clear_it(self):
+        ob.create(self.manager, 'd')
+        ob.prepare(self.manager, 'd')
+        self.login('d')
+        self.quit.reset_mock()
+        ob.prepare(self.manager, 'd')
         self.quit.assert_not_called()
-        self.assertEqual((self.manager.root / 'identity').read_text(), 'unknown-id')
+        self.assertEqual((self.manager.root / 'identity').read_text(), 'd-id')
 
     def test_existing_current_account_needs_no_clean_profile(self):
         ob.prepare(self.manager, 'a')

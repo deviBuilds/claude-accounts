@@ -106,6 +106,15 @@ class DesktopOnlyTests(OnboardingTests):
             ob.finish_desktop(self.manager,'d')
         self.assertNotIn('d',self.manager.index()['profiles'])
 
+    def test_desktop_only_retry_wrong_registered_login_is_not_just_reopened(self):
+        ob.finish_desktop(self.manager, 'a')
+        ob.create_desktop(self.manager, 'd')
+        ob.prepare_desktop(self.manager, 'd')
+        self.login('a')
+        ob.prepare_desktop(self.manager, 'd')
+        self.assertFalse((self.manager.root / 'identity').exists())
+        self.assertEqual(self.manager.index()['pendingLogin']['label'], 'd')
+
 
 # unittest would otherwise run the inherited base cases twice in this module.
 for name in list(vars(OnboardingTests)):

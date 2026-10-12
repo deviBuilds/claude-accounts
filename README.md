@@ -79,7 +79,9 @@ installer writes modules to `~/.local/lib/claude-accounts` and shell launchers t
 1. The standalone installer opens setup automatically for a new user. When opening
    the manager yourself, choose **Set up your first account**. The default CLI
    profile is named `a`.
-2. If CLI was selected, complete Claude Code's official browser login. CLI-only
+2. If CLI was selected, choose **Open CLI to sign in**, use `/login`, and then
+   `/exit` to return to setup. A separate browser-login command is also available;
+   if it fails, the manager offers the interactive CLI without restarting. CLI-only
    setup finishes here; the manager verifies its identity.
 3. If Desktop was selected, choose **Open Desktop sign-in** and sign into the
    intended account. With both apps selected, use the same account in each.
@@ -92,9 +94,15 @@ installer writes modules to `~/.local/lib/claude-accounts` and shell launchers t
 
 If Claude Code is already signed in, that account appears automatically. Choose
 **Set up Desktop login**, or **Save current Desktop login** if Desktop already uses it.
-If the current Desktop account has no matching verified CLI login, connect that
-account to CLI first when using both apps, or save it with Desktop-only setup;
-the manager will not discard an unrecognized active login.
+If the current Desktop account has no matching CLI profile, its verified local
+login is saved under a generated `desktop-…` label before switching away. Existing
+labels are never reassigned. That account remains available for switching back.
+
+If Desktop setup returns to the wrong signed-in account, choose **Open Desktop
+sign-in** again. The manager saves that outgoing login and prepares a fresh
+profile instead of repeatedly reopening it. If browser sign-in automatically
+chooses the wrong account, select the intended account before approving.
+An unfinished, unsigned browser flow is preserved when resuming.
 
 For more accounts choose **Add new account**, pick a label such as `work`, and follow
 the same sign-in flow. You can pause and resume. Desktop and CLI require separate
