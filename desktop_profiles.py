@@ -232,13 +232,13 @@ class Profiles:
         self.check()
         expected = self.verified_label(name)
         if desktop_account(self.root) != expected['account']:
-            raise RuntimeError(f'Desktop is not signed in as {expected["email"]}. Nothing saved under {name}.')
+            raise RuntimeError(f'Desktop is not signed in as {expected.get("email") or name}. Nothing saved under {name}.')
         index = self.index()
         existing = index['profiles'].get(name)
         if existing and existing['account'] != expected['account']:
             raise RuntimeError('This label already belongs to a different Desktop account.')
         if dry:
-            print(f'Would save {expected["email"]} as {name}; Desktop would pause briefly and reopen.')
+            print(f'Would save {expected.get("email") or name} as {name}; Desktop would pause briefly and reopen.')
             return
         running = app_running()
         try:
@@ -249,16 +249,32 @@ class Profiles:
             index['profiles'][name] = {**expected, 'snapshot': snapshot}
             index.pop('pendingLogin', None)
             atomic_json(self.index_path, index)
-            print(f'Saved {name}: {expected["email"]}. Encrypted login and application state preserved.')
+            print(f'Saved {name}: {expected.get("email") or name}. Encrypted login and application state preserved.')
         finally:
             if running:
                 open_app()
 
     def merge_code(self, target, index):
         relative = Path('claude-code-sessions')
-        accounts = {(p['account'], p['organization']) for p in index['profiles'].values()}
+        accounts = {(p['account'], p['organization']) for p in index['profiles'].values() if p.get('organization')}
         sources = [self.root / relative]
         sources += [self.snapshot_path(p['snapshot']) / 'data' / relative for p in index['profiles'].values()]
+        # Desktop-only accounts may not have an organization until Code is opened.
+        for profile in index['profiles'].values():
+            if profile.get('organization'):
+                continue
+            organizations = set()
+            for source in sources:
+                for folder in (source / profile['account']).glob('*'):
+                    try:
+                        uuid.UUID(folder.name)
+                    except ValueError:
+                        continue
+                    if folder.is_dir() and not folder.is_symlink():
+                        organizations.add(folder.name)
+            # Multiple organization folders are ambiguous; preserve them in place.
+            if len(organizations) == 1:
+                accounts.add((profile['account'], organizations.pop()))
         # Retain the newest entries for unregistered accounts in their original folders too.
         for source_root in sources:
             for source in source_root.glob('*/*/local_*.json'):
@@ -294,14 +310,14 @@ class Profiles:
                 if not file.exists() or source.stat().st_mtime_ns > file.stat().st_mtime_ns:
                     shutil.copy2(source, file)
 
-    def switch(self, name, login=False, dry=False):
+    def switch(self, name, login=False, dry=False, login_identity=None):
         self.check()
         if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,31}', name):
             raise RuntimeError('Invalid account label.')
         index = self.index()
         selected = index['profiles'].get(name)
         if login:
-            expected = self.verified_label(name)
+            expected = self.verified_label(name) if login_identity is None else login_identity
             if selected:
                 raise RuntimeError(f'{name} is already saved; use --switch {name}.')
         else:
@@ -313,7 +329,7 @@ class Profiles:
                 raise RuntimeError('Saved Desktop account does not match its label.')
         current = desktop_account(self.root)
         if not login and current == expected['account']:
-            print(f'Desktop is already using {expected["email"]}.')
+            print(f'Desktop is already using {expected.get("email") or name}.')
             return
         outgoing = {label: p for label, p in index['profiles'].items() if current and p['account'] == current}
         if current and not outgoing:
@@ -334,7 +350,7 @@ class Profiles:
                                    'then retry. The current Desktop login has been kept intact.')
         if dry:
             print(f'Would save current Desktop account {list(outgoing) or ["unsigned profile"]}, '
-                  f'{"open a clean login for" if login else "restore"} {name}: {expected["email"]}, and reopen Desktop.')
+                  f'{"open a clean login for" if login else "restore"} {name}: {expected.get("email") or name}, and reopen Desktop.')
             return
         was_running = app_running()
         try:
@@ -366,7 +382,7 @@ class Profiles:
                 self.recover(reopen=False)
                 raise
             for label, metadata in outgoing.items():
-                print(f'Saved current Desktop account: {label} — {metadata["email"]}.')
+                print(f'Saved current Desktop account: {label} — {metadata.get("email") or label}.')
             print(f'Preserved outgoing profile. Recovery copy: {self.store / rollback}')
         except BaseException:
             if was_running and not app_running() and not self.journal.exists():
@@ -374,9 +390,9 @@ class Profiles:
             raise
         open_app()
         if login:
-            print(f'Sign into {expected["email"]} in Desktop, then run claude-desktop-sync --save {name}.')
+            print(f'Sign into {expected.get("email") or name} in Desktop, then run claude-desktop-sync --save {name}.')
         else:
-            print(f'Restored {name}: {expected["email"]}. Open your conversation in the Code tab.')
+            print(f'Restored {name}: {expected.get("email") or name}. Open your conversation in the Code tab.')
 
     def recover(self, reopen=True):
         if not self.journal.exists():

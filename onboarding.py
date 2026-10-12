@@ -133,9 +133,83 @@ def finish(manager, label):
     print(f'CLI: claude-accounts --cli {label}. Desktop: select this account and Switch.')
 
 
+
+def create_desktop(manager, label):
+    validate(label)
+    if label in manager.index()['profiles'] or progress_path(manager, label).exists():
+        raise RuntimeError('That label is already in use. Select it to resume setup.')
+    if (manager.home / ('.claude-acct-' + label)).exists():
+        raise RuntimeError('That label already has a CLI profile. Select it to add Desktop.')
+    dp.atomic_json(progress_path(manager, label), {'label': label, 'phase': 'desktop', 'mode': 'desktop'})
+    print(f'Created Desktop profile {label}. No CLI login is required.')
+
+
+def prepare_desktop(manager, label):
+    validate(label)
+    index = manager.index()
+    pending = index.get('pendingLogin', {})
+    if pending and pending['label'] != label:
+        raise RuntimeError(f'Finish Desktop setup for {pending["label"]} first.')
+    if manager.journal.exists():
+        raise RuntimeError('Recover the interrupted Desktop switch before continuing.')
+    if not manager.root.exists():
+        dp.open_app()
+        return
+    manager.check()
+    current = dp.desktop_account(manager.root)
+    saved = index['profiles'].get(label)
+    if saved:
+        if current != saved['account']:
+            manager.switch(label)
+        else:
+            dp.open_app()
+        return
+    # On first setup, keep an already logged-in Desktop account for explicit saving.
+    # For additional accounts, a registered outgoing profile is preserved by switch.
+    registered = any(p['account'] == current for p in index['profiles'].values())
+    if pending or not current or not registered:
+        dp.open_app()
+        print('Sign into the intended account in Desktop, then verify and save it.')
+        return
+    manager.switch(label, login=True, login_identity={'account': None, 'organization': None, 'email': None})
+
+
+def finish_desktop(manager, label):
+    validate(label)
+    manager.check()
+    index = manager.index()
+    pending = index.get('pendingLogin', {})
+    if pending and pending['label'] != label:
+        raise RuntimeError(f'Finish Desktop setup for {pending["label"]} first.')
+    running = dp.app_running()
+    try:
+        dp.quit_app()
+        account = dp.desktop_account(manager.root)
+        if not account:
+            raise RuntimeError('Desktop is not signed in. Complete sign-in and retry.')
+        saved = index['profiles'].get(label)
+        if saved and saved['account'] != account:
+            raise RuntimeError('Desktop is signed into a different account; the saved label was not changed.')
+        for other, profile in index['profiles'].items():
+            if other != label and profile['account'] == account:
+                raise RuntimeError(f'This Desktop account is already saved as {other}. Choose it, or sign into a different account.')
+        # The encrypted session cookie and Desktop account ID must agree (desktop_account).
+        # CLI OAuth and an organization ID are not required to preserve this login.
+        metadata = {**(saved or {}), 'account': account, 'organization': (saved or {}).get('organization'),
+                    'email': (saved or {}).get('email'), 'desktopOnly': True}
+        snapshot = manager.snapshot(metadata)
+        index['profiles'][label] = {**metadata, 'snapshot': snapshot}
+        index.pop('pendingLogin', None)
+        dp.atomic_json(manager.index_path, index)
+        progress_path(manager, label).unlink(missing_ok=True)
+        print(f'Desktop login verified and saved as {label}. CLI was not required.')
+    finally:
+        if running:
+            dp.open_app()
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['create', 'prepare', 'finish'])
+    parser.add_argument('action', choices=['create', 'prepare', 'finish', 'create-desktop', 'prepare-desktop', 'finish-desktop'])
     parser.add_argument('label')
     args = parser.parse_args()
     validate(args.label)
@@ -146,7 +220,8 @@ def main():
     with manager.locked():
         if manager.journal.exists():
             raise RuntimeError('Recover the interrupted Desktop switch from Tools before continuing setup.')
-        {'create': create, 'prepare': prepare, 'finish': finish}[args.action](manager, args.label)
+        {'create': create, 'prepare': prepare, 'finish': finish, 'create-desktop': create_desktop,
+         'prepare-desktop': prepare_desktop, 'finish-desktop': finish_desktop}[args.action](manager, args.label)
 
 
 if __name__ == '__main__':

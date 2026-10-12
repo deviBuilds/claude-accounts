@@ -7,7 +7,7 @@ import shutil
 import sys
 
 FILES = ('accounts_tui.py', 'account_status.py', 'account_usage.py', 'cli_refresh.py',
-         'desktop-sync.py', 'desktop_profiles.py', 'onboarding.py', 'runtime.py')
+         'desktop-sync.py', 'desktop_profiles.py', 'onboarding.py', 'runtime.py', 'setup_options.py')
 
 
 def install(source, home, python):

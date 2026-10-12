@@ -16,6 +16,12 @@ import accounts_tui as tui
 
 
 class BinaryInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.options = patch.object(installer.setup_options, 'choose', return_value=['cli', 'desktop']).start()
+        patch.object(installer.setup_options, 'load', return_value=['cli', 'desktop']).start()
+        self.saved_options = patch.object(installer.setup_options, 'save').start()
+        self.addCleanup(patch.stopall)
+
     def test_source_and_frozen_child_commands(self):
         script = Path('/example/desktop-sync.py')
         self.assertEqual(runtime.command(script, '--status-json'), [sys.executable, str(script), '--status-json'])
@@ -115,6 +121,26 @@ class BinaryInstallTests(unittest.TestCase):
             path=Path(directory)/'install.command'
             path.write_text(script)
             subprocess.run(['/bin/bash','-n',str(path)],check=True)
+
+    def test_component_selection_installs_only_requested_dependencies(self):
+        for choice in ('cli', 'desktop', 'both'):
+            with self.subTest(choice=choice), patch.object(sys,'frozen',True,create=True), \
+                 patch.object(installer.os,'geteuid',return_value=501), \
+                 patch.object(installer,'install_cli') as cli, patch.object(installer,'install_desktop') as desktop, \
+                 patch.object(installer,'install_binary',return_value=Path('/example/claude-accounts')):
+                self.assertEqual(installer.main(['--no-launch','--components='+choice]),0)
+                self.assertEqual(cli.call_count,int(choice in ('cli','both')))
+                self.assertEqual(desktop.call_count,int(choice in ('desktop','both')))
+                self.saved_options.assert_called_with(['cli','desktop'] if choice=='both' else [choice])
+
+    def test_cancel_selection_does_not_install_or_save_preferences(self):
+        with patch.object(sys,'frozen',True,create=True), patch.object(installer.os,'geteuid',return_value=501), \
+             patch.object(sys.stdin,'isatty',return_value=True),patch.object(sys.stdout,'isatty',return_value=True), \
+             patch.object(installer,'install_cli') as cli, patch.object(installer,'install_desktop') as desktop, \
+             patch.object(installer,'install_binary') as binary:
+            self.options.return_value=None
+            self.assertEqual(installer.main([]),0)
+            for method in (cli,desktop,binary,self.saved_options):method.assert_not_called()
 
     def test_failed_dependency_stops_before_app_install_and_tui(self):
         with patch.object(sys,'frozen',True,create=True), patch.object(installer.os,'geteuid',return_value=501), \

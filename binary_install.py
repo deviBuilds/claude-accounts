@@ -14,6 +14,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
+import setup_options
 
 APP = Path('/Applications/Claude.app')
 CASK = 'https://formulae.brew.sh/api/cask/claude.json'
@@ -121,6 +122,7 @@ def install_binary(source, home):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--components', choices=['cli', 'desktop', 'both'], help='select apps without the interactive checklist')
     parser.add_argument('--check', action='store_true', help='report dependencies without installing or opening anything')
     parser.add_argument('--no-launch', action='store_true', help='install dependencies and app without opening the TUI')
     args = parser.parse_args(argv)
@@ -131,8 +133,9 @@ def main(argv=None):
     print('CLAUDE ACCOUNTS — standalone installation', flush=True)
     print('Python, Node.js and Homebrew are not required.', flush=True)
     if args.check:
-        print('Claude Code: '+(shutil.which('claude') or 'will install'))
-        print('Claude Desktop: '+('already installed' if APP.is_dir() else 'will install'))
+        print('Claude Code: '+(shutil.which('claude') or 'not installed'))
+        print('Claude Desktop: '+('already installed' if APP.is_dir() else 'not installed'))
+        print('Choose CLI, Desktop, or both during interactive setup.')
         print(f'Account manager: {Path.home() / ".local/bin/claude-accounts"}')
         return 0
     if not getattr(sys, 'frozen', False):
@@ -142,10 +145,17 @@ def main(argv=None):
     if os.geteuid() == 0:
         parser.error('Run as your normal user, not with sudo. Only the Desktop copy may request administrator access.')
     try:
+        components = setup_options.normalize(args.components) if args.components else (setup_options.load() if args.no_launch else setup_options.choose())
+        if components is None:
+            print('Setup cancelled. Nothing installed.')
+            return 0
         with tempfile.TemporaryDirectory(prefix='claude-accounts-dependencies-') as directory:
-            install_cli(Path(directory))
-            install_desktop(Path(directory))
+            if 'cli' in components:
+                install_cli(Path(directory))
+            if 'desktop' in components:
+                install_desktop(Path(directory))
         target = install_binary(Path(sys.executable), Path.home())
+        setup_options.save(components)
         print(f'Installed: {target}', flush=True)
         if args.no_launch:
             return 0

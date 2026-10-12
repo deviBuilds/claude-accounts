@@ -23,18 +23,24 @@ executable of the tested Python implementation, not a Rust rewrite.
 
 The installer:
 
-1. Checks your Mac and verifies the executable's checksum.
+1. Checks your Mac and verifies the executable's checksum. Then shows a checklist:
+   **↑/↓** to move, **Space** to select CLI, Desktop, or both, **Enter** to continue.
+   Installed apps show **✓ Detected** and are reused; installation detection does
+   not imply you are signed in. You can deselect a detected app.
 2. Reuses existing Claude Code and Desktop installations.
-3. Installs a missing CLI with [Anthropic's native installer](https://code.claude.com/docs/en/setup).
-4. Downloads a missing Desktop directly from Anthropic, using the URL and checksum
+3. If selected, installs a missing CLI with [Anthropic's native installer](https://code.claude.com/docs/en/setup).
+4. If selected, downloads a missing Desktop directly from Anthropic, using the URL and checksum
    in [Homebrew's public cask metadata](https://formulae.brew.sh/cask/claude). It
    verifies the archive checksum and Anthropic's code signature before copying the
    app to `/Applications`. Homebrew itself is not installed. macOS may request an
    administrator password for that copy.
-5. Installs `~/.local/bin/claude-accounts` and the compatible `claude-desktop-sync`
+5. Saves your choices and installs `~/.local/bin/claude-accounts` and the compatible `claude-desktop-sync`
    launcher, then opens setup for a new user. Existing users see their accounts.
 
-CLI and Desktop browser sign-ins are completed by the user. The installer does not
+Only selected apps are installed and onboarded. CLI-only setup ends after CLI
+verification. Desktop-only setup checks and saves the encrypted Desktop login
+without installing the CLI or creating a CLI profile. Browser sign-ins are
+completed by the user. The installer does not
 edit shell configuration or replace saved accounts. Rerunning it skips installed
 dependencies. Failures stop with an error; they do not open unfinished onboarding.
 A broken existing CLI is reported rather than silently replaced.
@@ -44,6 +50,11 @@ To check dependencies without changing anything:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/deviBuilds/claude-accounts/main/install.sh | bash -s -- --check
 ```
+
+To change your app choices later, run `claude-accounts --install` again.
+For scripted installation, append `--components=cli`, `--components=desktop`, or
+`--components=both` after `bash -s --`. With `--no-launch`, omitted choices reuse
+your saved selection (both on a first install).
 
 For installation without opening the TUI, use `bash -s -- --no-launch` at the end
 of the command. Later, run
@@ -68,16 +79,22 @@ installer writes modules to `~/.local/lib/claude-accounts` and shell launchers t
 1. The standalone installer opens setup automatically for a new user. When opening
    the manager yourself, choose **Set up your first account**. The default CLI
    profile is named `a`.
-2. Complete Claude Code's official browser login. The manager verifies its identity.
-3. Choose **Open Desktop sign-in**, then sign into the same account in Desktop.
+2. If CLI was selected, complete Claude Code's official browser login. CLI-only
+   setup finishes here; the manager verifies its identity.
+3. If Desktop was selected, choose **Open Desktop sign-in** and sign into the
+   intended account. With both apps selected, use the same account in each.
    A first Desktop launch initializes its own data directory.
 4. Choose **Verify and finish setup**. Desktop closes gracefully to flush its login,
-   the manager checks the identities match, saves its encrypted profile, and reopens it.
+   the manager verifies the encrypted login, saves its profile, and reopens it.
+   With both apps selected, it also checks that the CLI and Desktop identities match.
+   Desktop-only profiles display your chosen label because a cookie verifies the
+   account ID but does not provide an email address.
 
 If Claude Code is already signed in, that account appears automatically. Choose
 **Set up Desktop login**, or **Save current Desktop login** if Desktop already uses it.
 If the current Desktop account has no matching verified CLI login, connect that
-account to CLI first; the manager will not discard an unrecognized active login.
+account to CLI first when using both apps, or save it with Desktop-only setup;
+the manager will not discard an unrecognized active login.
 
 For more accounts choose **Add new account**, pick a label such as `work`, and follow
 the same sign-in flow. You can pause and resume. Desktop and CLI require separate
@@ -93,7 +110,8 @@ or revoked login still requires browser sign-in. You can retry network failures.
 
 Account cards show 5-hour and weekly percentages **used**, local reset times and
 countdowns. **View usage limits** shows all available model-specific windows and the
-last successful update. Usage is cached for five minutes; errors and stale readings
+last successful update. Usage percentages and automatic CLI renewal require a
+CLI login and are unavailable in Desktop-only mode. Usage is cached for five minutes; errors and stale readings
 are labeled. A reset passing does not imply a freshly confirmed 0% reading.
 
 Open a CLI profile from any shell without configuring aliases:
@@ -114,6 +132,7 @@ configuration-directory names are not discovered automatically.
 - Desktop snapshots and rollback copies: `~/.claude-desktop-profiles`.
 - Background refresh attempt metadata: `~/.claude-account-refresh`.
 - Usage cache: `~/.claude-account-usage` (percentages and timestamps, no tokens).
+- App selection: `~/.config/claude-accounts/preferences.json`.
 - OAuth credentials stay in the user's own macOS Keychain.
 
 Snapshots contain private application data and encrypted login cookies. **Share

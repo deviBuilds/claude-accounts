@@ -13,11 +13,13 @@ main() {
   for option in "$@"; do
     case "$option" in
       --check|--no-launch) launch=0 ;;
+      --components=cli|--components=desktop|--components=both) ;;
       --help|-h)
         printf '%s\n' 'Claude Accounts installer (Apple Silicon, macOS 13+)' \
           'Default: install missing Claude dependencies and open onboarding.' \
           '--check: report dependencies without installing anything.' \
-          '--no-launch: install without opening the TUI.'
+          '--no-launch: install without opening the TUI.' \
+          '--components=cli|desktop|both: choose apps without the checklist.'
         return 0 ;;
       *) printf 'Unknown installer option: %s\n' "$option" >&2; return 2 ;;
     esac
@@ -37,10 +39,10 @@ main() {
     return 1
   fi
   # Pin both downloads to one release, avoiding a latest-release race.
-  base='https://github.com/deviBuilds/claude-accounts/releases/download/v0.1.0'
+  base='https://github.com/deviBuilds/claude-accounts/releases/download/v0.2.0'
   asset="claude-accounts-macos-$architecture"
   ca_workdir=$(mktemp -d "${TMPDIR:-/tmp}/claude-accounts-download.XXXXXX")
-  echo 'Downloading Claude Accounts v0.1.0…'
+  echo 'Downloading Claude Accounts v0.2.0…'
   curl --proto '=https' --tlsv1.2 -fSL --retry 3 --connect-timeout 15 --max-time 300 \
     "$base/$asset" -o "$ca_workdir/$asset"
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 15 --max-time 60 \

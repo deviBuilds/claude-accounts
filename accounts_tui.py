@@ -16,6 +16,7 @@ import time
 from cli_refresh import RefreshWorker
 import account_usage
 import runtime
+import setup_options
 
 HELPER = Path(__file__).with_name('desktop-sync.py')
 ONBOARD = Path(__file__).with_name('onboarding.py')
@@ -109,6 +110,7 @@ class App:
     def __init__(self, screen, demo=False, onboard=False):
         self.screen, self.demo = screen, demo
         self.onboard = onboard
+        self.components = list(setup_options.CHOICES) if demo else setup_options.load()
         self.state = {'accounts': []}
         self.page, self.cursor, self.label = 'home', 0, None
         self.wizard, self.input_text = None, ''
@@ -237,7 +239,7 @@ class App:
                     self.start_cli_refresh(row)
                 return
             if row and row['cli_state'] == 'ready':
-                self.wizard['stage'] = 'desktop'
+                self.wizard['stage'] = 'desktop' if 'desktop' in self.components else 'complete'
                 self.cursor = 0
                 self.notice = 'CLI verified: ' + row['email']
             else:
@@ -283,7 +285,7 @@ class App:
                 self.pending_cli_check = None
                 if self.page == 'wizard' and self.label == worker.label:
                     if result['cli_state'] == 'ready':
-                        self.wizard['stage'] = 'finish' if self.account.get('pending') else 'desktop'
+                        self.wizard['stage'] = ('finish' if self.account.get('pending') else 'desktop') if 'desktop' in self.components else 'complete'
                         self.cursor = 0
                     else:
                         self.message('CLI sign-in needs attention', [result['cli_detail']])
@@ -343,10 +345,10 @@ class App:
                         self.refresh()
                 elif job.startswith('onboard:'):
                     action = job.split(':')[1]
-                    self.wizard['stage'] = {'create': 'cli', 'prepare': 'finish', 'finish': 'complete'}[action]
+                    self.wizard['stage'] = {'create': 'cli', 'prepare': 'finish', 'finish': 'complete', 'create-desktop': 'desktop', 'prepare-desktop': 'finish', 'finish-desktop': 'complete'}[action]
                     self.cursor = 0
                     self.notice = 'Profile created.' if action == 'create' else ''
-                    if action in ('prepare', 'finish'):
+                    if action in ('prepare', 'finish', 'prepare-desktop', 'finish-desktop'):
                         self.refresh()
                 else:
                     self.modal = ('result', None, 'Finished', self.logs[:])
@@ -371,8 +373,8 @@ class App:
                 rows.append(('account:' + a['label'], f'{a["label"]}  {a.get("email") or "Identity not verified"}',
                              f'CLI {a["cli_state"]}  /  {desktop}'))
             if self.state.get('first_run'):
-                rows.insert(0, ('first_account', 'Set up your first account', 'Sign in to CLI, connect Desktop, and save the login'))
-            return rows + [('add', '+ Add new account', 'Guided setup for both CLI and Desktop'),
+                rows.insert(0, ('first_account', 'Set up your first account', 'Connect your selected Claude apps'))
+            return rows + [('add', '+ Add new account', 'Set up the Claude apps you selected'),
                            ('refresh', 'Refresh accounts', 'Check current logins'),
                            ('tools', 'Tools', 'Sync history or recover an interrupted switch'),
                            ('quit', 'Quit', '')]
@@ -385,16 +387,21 @@ class App:
                     setup = [('setup', 'Finish Desktop sign-in', 'Continue the sign-in you started, then verify and save it')]
                 elif not a.get('desktop_active'):
                     detail = ('Sign in once in Desktop and save the login for switching'
-                              if a.get('cli_state') == 'ready' else 'First verify your CLI login, then sign in to Desktop')
+                              if a.get('cli_state') == 'ready' else 'First verify your CLI login, then sign in to Desktop' if 'cli' in self.components else 'Sign in to Desktop and save this account')
                     setup = [('setup', 'Set up Desktop login', detail)]
             retry = [('retry_refresh', 'Retry background refresh', 'Try renewing this CLI login without opening the interactive CLI')] if a.get('cli_state') in ('refresh_failed', 'sign_in_required') else []
-            return desktop + setup + retry + [('usage', 'View usage limits', 'All usage windows, reset dates and last update time'),
+            rows = desktop + setup + retry + [('usage', 'View usage limits', 'All usage windows, reset dates and last update time'),
                               ('cli', 'Open CLI', 'Open an interactive Claude session; /exit returns here'),
                               ('auth', 'Sign in to CLI', 'Open the official browser sign-in flow'),
-                              ('save', 'Save current Desktop login', 'Verify it matches this CLI account first'),
+                              ('save', 'Save current Desktop login', 'Verify it matches this CLI account first' if 'cli' in self.components else 'Verify and save the signed-in Desktop account'),
                               ('back', 'Back to accounts', '')]
+            if 'cli' not in self.components:
+                rows = [r for r in rows if r[0] not in ('cli', 'auth', 'retry_refresh', 'usage')]
+            if 'desktop' not in self.components:
+                rows = [r for r in rows if r[0] not in ('switch', 'setup', 'save')]
+            return rows
         if self.page == 'tools':
-            rows = [('sync', 'Sync local Code session history', 'Copy local session entries across accounts')]
+            rows = [('sync', 'Sync local Code session history', 'Copy local session entries across accounts')] if set(setup_options.CHOICES).issubset(self.components) else []
             if self.state.get('recovery_pending'):
                 rows.insert(0, ('recover', 'Recover interrupted switch', 'Restore the original Desktop profile'))
             return rows + [('back', 'Back to accounts', '')]
@@ -408,7 +415,7 @@ class App:
             elif stage == 'desktop':
                 rows = [('prepare', 'Open Desktop sign-in', 'Preserve the current login and prepare this account')]
             elif stage == 'finish':
-                rows = [('finish', 'Verify and finish setup', 'Check Desktop matches the CLI, then save its login'),
+                rows = [('finish', 'Verify and finish setup', 'Verify and save the signed-in Desktop account' if 'cli' not in self.components else 'Check Desktop matches the CLI, then save its login'),
                         ('prepare', 'Reopen Desktop', 'Resume the existing sign-in screen')]
             elif stage == 'complete':
                 return [('done', 'Done — back to accounts', '')]
@@ -426,7 +433,12 @@ class App:
             self.wizard = {'stage': 'name'}
         else:
             a = self.account or {}
-            stage = 'finish' if a.get('pending') and a.get('cli_state') == 'ready' else 'desktop' if a.get('cli_state') == 'ready' else 'cli'
+            if 'cli' not in self.components:
+                stage = 'finish' if a.get('pending') else 'desktop'
+            elif 'desktop' not in self.components:
+                stage = 'complete' if a.get('cli_state') == 'ready' else 'cli'
+            else:
+                stage = 'finish' if a.get('pending') and a.get('cli_state') == 'ready' else 'desktop' if a.get('cli_state') == 'ready' else 'cli'
             self.wizard = {'stage': stage}
         self.goto('wizard')
 
@@ -440,7 +452,7 @@ class App:
             self.label = action.split(':', 1)[1]
             self.goto('account')
         elif action == 'first_account':
-            if not self.state.get('cli_available', True):
+            if 'cli' in self.components and not self.state.get('cli_available', True):
                 self.message('Install Claude Code first', ['Install Claude Code from https://code.claude.com/docs/en/setup',
                              'Then reopen this account manager. Python 3.10+ and macOS are required.'])
                 return
@@ -474,8 +486,11 @@ class App:
                                                       'This launch uses safe mode (custom hooks and plugins disabled).'])
             else:
                 self.launch_cli(self.label, authenticate=True)
-        elif action in ('prepare', 'finish'):
+        elif action in ('prepare', 'finish', 'prepare-desktop', 'finish-desktop'):
             self.start_onboarding(action)
+        elif action == 'save' and 'cli' not in self.components:
+            self.confirm('save_desktop', 'Save Desktop login?', [f'Verify and save the signed-in Desktop account as {self.label}.',
+                         'Desktop will quit and reopen. Running Desktop sessions will pause.'])
         else:
             reason = disabled_reason(action, self.account, self.state)
             if reason:
@@ -492,6 +507,8 @@ class App:
                                   'recover': 'Recover Desktop profile?', 'sync': 'Sync local history?'}[action], lines)
 
     def start_onboarding(self, action):
+        if 'cli' not in self.components and action in ('create', 'prepare', 'finish'):
+            action += '-desktop'
         if self.demo:
             self.message('Demo mode', ['Setup actions are disabled. No accounts were changed.'])
             return
@@ -500,6 +517,10 @@ class App:
         self.job = 'onboard:' + action
 
     def start(self, action):
+        if action == 'save_desktop':
+            self.begin_setup()
+            self.start_onboarding('finish')
+            return
         if action == 'cli':
             self.launch_cli(self.label)
             return
@@ -519,7 +540,7 @@ class App:
             self.message('CLI unavailable', ['Could not find claude on PATH.'])
             return
         command = [executable, 'auth', 'login', '--claudeai'] if authenticate else [executable, '--safe-mode']
-        if authenticate and self.account and self.account.get('email'):
+        if authenticate and self.account and '@' in (self.account.get('email') or ''):
             command += ['--email', self.account['email']]
         result = 1
         curses.def_prog_mode()
@@ -576,6 +597,15 @@ class App:
             'complete': [f'CLI and Desktop are ready for {who}.',
                          f'CLI: claude-accounts --cli {self.label or "<label>"}',
                          'Next time, select this account and choose Switch Desktop.']}
+        if 'cli' not in self.components:
+            titles.update(desktop='Step 1 of 2 — Desktop sign-in', finish='Step 2 of 2 — Verify and save')
+            descriptions['name'] = ['Choose a label for this Desktop account, such as work.', 'A CLI profile will not be created.']
+            descriptions['desktop'] = [f'Open Desktop and sign into the account to save as {self.label}.', 'An existing login can be saved directly. Additional saved accounts switch through a clean sign-in.', 'CLI is not required. Usage percentages require a separate CLI login.']
+            descriptions['finish'] = [f'Verify the account in Desktop, then save its login as {self.label}.', 'The encrypted Desktop login is checked before saving. Desktop briefly restarts.']
+            descriptions['complete'] = [f'Desktop account {self.label} is saved.', 'Select it to switch Desktop next time. CLI was not required.']
+        elif 'desktop' not in self.components:
+            titles['cli'] = 'CLI sign-in'
+            descriptions['complete'] = [f'CLI is ready for {who}.', f'Run: claude-accounts --cli {self.label}', 'Desktop was not part of this setup.']
         return titles[stage], descriptions[stage]
 
     def fill(self, y, x, width, role):
@@ -600,13 +630,15 @@ class App:
         label = '[' + row['label'] + ']'
         self.put(y, 5, label, self.color(10 if selected else 19) | curses.A_BOLD, min(len(label), width-7))
         x = 6 + len(label)
-        self.put(y, x, row.get('email') or 'Identity not verified',
+        self.put(y, x, row.get('email') or (f'Desktop account {row["label"]}' if row.get('desktop_saved') else 'Identity not verified'),
                  self.color(base) | curses.A_BOLD, width-x)
         cli = row.get('cli_state', 'unknown')
         role = 14 if cli == 'ready' else 16 if cli == 'refreshing' else 17 if cli == 'sign_in_required' else 15
-        display = {'expired': 'refresh pending', 'refresh_failed': 'refresh failed', 'sign_in_required': 'sign-in required'}.get(cli, cli)
+        display = {'not_selected': 'not selected', 'expired': 'refresh pending', 'refresh_failed': 'refresh failed', 'sign_in_required': 'sign-in required'}.get(cli, cli)
         x = self.badge(y+1, 5, 'CLI ' + display, role, width+2)
-        if row.get('desktop_active'):
+        if 'desktop' not in self.components:
+            text, role = 'Desktop not selected', 13
+        elif row.get('desktop_active'):
             text, role = 'Desktop active', 16
         elif row.get('pending'):
             text, role = 'Desktop: finish sign-in', 15
@@ -629,7 +661,7 @@ class App:
                 role = 22 if stale or window['percent'] >= 80 else 9 if selected else 13
                 self.put(y+offset, 5, text, self.color(role), width-4)
         else:
-            detail = usage.get('detail') or 'Usage loads after CLI login is verified.'
+            detail = ('Usage needs a CLI login.' if 'cli' not in self.components else usage.get('detail') or 'Usage loads after CLI login is verified.')
             self.put(y+2, 5, 'Usage unavailable', self.color(9 if selected else 13), width-4)
             self.put(y+3, 5, detail, self.color(9 if selected else 13), width-4)
         if not curses.has_colors() and selected:
@@ -660,7 +692,7 @@ class App:
             y = 5
             if self.state.get('first_run'):
                 self.put(y, 2, 'WELCOME — connect your first Claude account', self.color(1) | curses.A_BOLD, cw)
-                self.put(y+1, 2, 'CLI and Desktop each need a one-time browser sign-in.', self.color(4), cw)
+                self.put(y+1, 2, 'Sign into the Claude apps you selected during installation.', self.color(4), cw)
                 y += 3
         else:
             title, intro = self.header()
@@ -670,7 +702,14 @@ class App:
                 stage = self.wizard['stage']
                 current = {'name': 0, 'cli': 0, 'desktop': 1, 'finish': 2, 'complete': 3}[stage]
                 x = 2
-                for i, step in enumerate(('1 CLI', '2 Desktop', '3 Save')):
+                steps = ('1 CLI', '2 Desktop', '3 Save')
+                if 'cli' not in self.components:
+                    steps = ('1 Desktop', '2 Save')
+                    current = {'name': 0, 'desktop': 0, 'finish': 1, 'complete': 2}.get(stage, 0)
+                elif 'desktop' not in self.components:
+                    steps = ('1 CLI',)
+                    current = 1 if stage == 'complete' else 0
+                for i, step in enumerate(steps):
                     x = self.badge(y, x, step, 14 if i < current else 16 if i == current else 13, cw+2)
                 y += 2
             # Keep enough room for an actionable menu even in a short terminal.
