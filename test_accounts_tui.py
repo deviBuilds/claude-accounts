@@ -241,6 +241,54 @@ class TuiTests(unittest.TestCase):
         self.assertEqual(self.app.wizard['stage'], 'desktop')
         self.assertEqual(self.app.items()[0][0], 'prepare')
 
+    def test_save_checks_live_desktop_and_requires_close_confirmation(self):
+        self.app.label = 'b'
+        self.app.wizard = {'stage': 'finish'}
+        self.app.goto('wizard')
+        self.app.demo = False
+        self.app.state['desktop_running'] = False  # Stale header must not decide.
+        with patch.object(tui.dp, 'desktop_state', return_value={'running': True, 'background': False}), \
+             patch.object(self.app, 'start_onboarding') as start:
+            self.app.dispatch('finish')
+            start.assert_not_called()
+            self.assertEqual(self.app.modal[:3], ('confirm', 'close_save:finish', 'Close Desktop and save?'))
+            self.assertTrue(self.app.state['desktop_running'])
+            self.app.key(27)
+            start.assert_not_called()
+            self.app.dispatch('finish')
+            self.app.key(10)
+            start.assert_called_once_with('finish')
+
+    def test_closed_desktop_saves_without_close_prompt(self):
+        self.app.label = 'b'
+        self.app.wizard = {'stage': 'finish'}
+        self.app.goto('wizard')
+        self.app.demo = False
+        with patch.object(tui.dp, 'desktop_state', return_value={'running': False, 'background': False}), \
+             patch.object(self.app, 'start_onboarding') as start:
+            self.app.dispatch('finish')
+            start.assert_called_once_with('finish')
+            self.assertIsNone(self.app.modal)
+
+    def test_busy_save_keeps_save_step_and_offers_retry_without_changing_login(self):
+        self.app.label = 'b'
+        self.app.wizard = {'stage': 'finish'}
+        self.app.goto('wizard')
+        events = tui.queue.Queue()
+        events.put(('line', 'Setup stopped: DESKTOP_BUSY: Background tasks remain.'))
+        events.put(('done', 1))
+        self.app.worker = SimpleNamespace(events=events)
+        self.app.job = 'onboard:finish'
+        with patch.object(tui.dp, 'desktop_state', return_value={'running': False, 'background': True}), \
+             patch.object(self.app, 'start_onboarding') as start:
+            self.app.poll()
+            self.assertEqual(self.app.wizard['stage'], 'finish')
+            self.assertEqual(self.app.modal[:2], ('confirm', 'retry_save:finish'))
+            self.assertTrue(self.app.state['desktop_background'])
+            self.assertIn('Cmd+Q', ' '.join(self.app.modal[3]))
+            self.app.key(10)
+            start.assert_called_once_with('finish')
+
     def test_new_profile_creation_refreshes_accounts_without_restart(self):
         self.app.label = 'claude-zeno'
         self.app.wizard = {'stage': 'name'}
@@ -446,7 +494,7 @@ class StatusTests(unittest.TestCase):
             def identity(config):
                 self.assertIsNotNone(config, 'expired token must not be sent')
                 return 'b-id', 'org-id', 'verified@example.test'
-            with patch.object(account_status.dp, 'desktop_account', return_value=None), patch.object(account_status.dp, 'app_running', return_value=False):
+            with patch.object(account_status.dp, 'desktop_account', return_value=None), patch.object(account_status.dp, 'desktop_state', return_value={'running': False, 'background': False}):
                 result = account_status.collect(home, creds, identity)
             self.assertEqual(result['accounts'][0]['cli_state'], 'expired')
             self.assertIsNone(result['accounts'][0]['email'])

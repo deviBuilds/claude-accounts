@@ -62,7 +62,7 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(options.load(home),['desktop'])
             store=home/'.claude-desktop-profiles';store.mkdir()
             (store/'onboarding-work.json').write_text('{"mode":"desktop"}')
-            with patch.object(dp,'desktop_account',return_value=None),patch.object(dp,'app_running',return_value=False):
+            with patch.object(dp,'desktop_account',return_value=None),patch.object(dp,'desktop_state',return_value={'running':False,'background':False}):
                 state=account_status.collect(home,lambda _:self.fail('CLI credentials read'),lambda _:self.fail('CLI identity called'))
             self.assertIn('work',[a['label'] for a in state['accounts']])
             self.assertTrue(all(a['cli_state']=='not_selected' for a in state['accounts']))

@@ -95,7 +95,7 @@ class FirstInstallTests(unittest.TestCase):
             home = Path(temp)
             def missing(_):
                 raise RuntimeError('No login yet')
-            with patch.object(dp, 'desktop_account', return_value=None), patch.object(dp, 'app_running', return_value=False):
+            with patch.object(dp, 'desktop_account', return_value=None), patch.object(dp, 'desktop_state', return_value={'running': False, 'background': False}):
                 state = account_status.collect(home, missing, missing)
             self.assertTrue(state['first_run'])
             self.assertEqual([a['label'] for a in state['accounts']], ['a'])

@@ -119,51 +119,68 @@ def desktop_account(root):
     return next(iter(accounts))
 
 
-def app_running():
-    result = subprocess.run(['pgrep', '-f', '^/Applications/Claude[.]app/Contents/MacOS/Claude( |$)'],
-                            capture_output=True)
-    if result.returncode not in (0, 1):
-        raise RuntimeError('Cannot determine whether Claude Desktop is running.')
-    return result.returncode == 0
-
-
-def desktop_processes():
-    result = subprocess.run(['ps', '-axo', 'pid=,ppid=,comm='], capture_output=True, text=True, check=True)
+def process_records():
+    result = subprocess.run(['ps', '-axo', 'pid=,ppid=,stat=,comm='], capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError('Cannot check Claude Desktop processes. Retry before saving.')
     records = []
     for line in result.stdout.splitlines():
-        fields = line.strip().split(None, 2)
-        if len(fields) == 3:
-            records.append((int(fields[0]), int(fields[1]), fields[2]))
+        fields = line.strip().split(None, 3)
+        if len(fields) == 4 and not fields[2].startswith('Z'):
+            records.append((int(fields[0]), int(fields[1]), fields[3]))
+    return records
+
+
+def app_running():
+    return any(command == APP + '/Contents/MacOS/Claude' for _, _, command in process_records())
+
+
+def desktop_processes(records=None):
+    records = process_records() if records is None else records
+    # Crashpad can outlive the app. It only reports crashes; it is not an
+    # authenticated Desktop session and its disposable data is excluded from snapshots.
+    ignored = {pid for pid, _, command in records if command.startswith(APP + '/')
+               and command.endswith('/chrome_crashpad_handler')}
     runtime = str(Path.home() / 'Library/Application Support/Claude/claude-code') + '/'
-    owned = {pid for pid, _, command in records if command.startswith((APP + '/', runtime))}
+    owned = {pid for pid, _, command in records if pid not in ignored and command.startswith((APP + '/', runtime))}
     while True:
-        children = {pid for pid, parent, _ in records if parent in owned}
+        children = {pid for pid, parent, _ in records if parent in owned and pid not in ignored}
         expanded = owned | children
         if expanded == owned:
             return owned
         owned = expanded
 
 
+def desktop_state():
+    records = process_records()
+    running = any(command == APP + '/Contents/MacOS/Claude' for _, _, command in records)
+    return {'running': running, 'background': bool(desktop_processes(records)) and not running}
+
+
+class DesktopBusyError(RuntimeError):
+    def __init__(self, message):
+        super().__init__('DESKTOP_BUSY: ' + message)
+
+
 def quit_app():
     owned = desktop_processes()
     if app_running():
         print('Quitting Claude Desktop gracefully; this pauses its running sessions.', flush=True)
-        result = subprocess.run(['osascript', '-e', f'tell application id "{BUNDLE}" to quit'],
-                                capture_output=True, timeout=35)
+        try:
+            result = subprocess.run(['osascript', '-e', f'tell application id "{BUNDLE}" to quit'],
+                                    capture_output=True, timeout=35)
+        except subprocess.TimeoutExpired:
+            raise DesktopBusyError('Claude did not finish quitting. Quit it with Cmd+Q, then retry.') from None
         if result.returncode:
-            raise RuntimeError('Claude did not quit. Quit it with Cmd+Q, then retry.')
+            raise DesktopBusyError('Claude did not quit. Quit it with Cmd+Q, then retry.')
     for _ in range(100):
-        live = set()
-        for pid in owned:
-            try:
-                os.kill(pid, 0)
-                live.add(pid)
-            except ProcessLookupError:
-                pass
-        if not live and not desktop_processes():
+        records = process_records()
+        live = owned.intersection(pid for pid, _, _ in records) | desktop_processes(records)
+        if not live:
             return
         time.sleep(0.1)
-    raise RuntimeError('Desktop or its background tasks are still running; no profile files changed. Stop them and retry.')
+    raise DesktopBusyError('Claude background tasks are still running. Quit Claude with Cmd+Q and stop its remaining sessions, '
+                           'then retry saving. No profile files changed.')
 
 
 def open_app():
@@ -241,8 +258,10 @@ class Profiles:
             print(f'Would save {expected.get("email") or name} as {name}; Desktop would pause briefly and reopen.')
             return
         running = app_running()
+        stopped = False
         try:
             quit_app()
+            stopped = True
             if desktop_account(self.root) != expected['account']:
                 raise RuntimeError('Desktop account changed while quitting; no profile saved.')
             snapshot = self.snapshot(expected)
@@ -251,7 +270,7 @@ class Profiles:
             atomic_json(self.index_path, index)
             print(f'Saved {name}: {expected.get("email") or name}. Encrypted login and application state preserved.')
         finally:
-            if running:
+            if running and stopped:
                 open_app()
 
     def merge_code(self, target, index):
@@ -361,8 +380,10 @@ class Profiles:
                   f'{"open a clean login for" if login else "restore"} {name}: {expected.get("email") or name}, and reopen Desktop.')
             return
         was_running = app_running()
+        stopped = False
         try:
             quit_app()
+            stopped = True
             if desktop_account(self.root) != current:
                 raise RuntimeError('Desktop account changed while quitting; retry.')
             outgoing_meta = next(iter(outgoing.values())) if outgoing else {'account': None}
@@ -393,7 +414,7 @@ class Profiles:
                 print(f'Saved current Desktop account: {label} — {metadata.get("email") or label}.')
             print(f'Preserved outgoing profile. Recovery copy: {self.store / rollback}')
         except BaseException:
-            if was_running and not app_running() and not self.journal.exists():
+            if was_running and stopped and not app_running() and not self.journal.exists():
                 open_app()
             raise
         open_app()

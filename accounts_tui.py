@@ -18,6 +18,7 @@ from cli_refresh import RefreshWorker, environment as profile_environment
 import account_usage
 import runtime
 import setup_options
+import desktop_profiles as dp
 
 HELPER = Path(__file__).with_name('desktop-sync.py')
 ONBOARD = Path(__file__).with_name('onboarding.py')
@@ -363,6 +364,10 @@ class App:
                         if (self.page, self.label, (self.wizard or {}).get('stage')) == (page, label, stage):
                             self.dispatch(action)
                 elif value:
+                    if job in ('save', 'onboard:finish', 'onboard:finish-desktop') and any('DESKTOP_BUSY:' in line for line in self.logs):
+                        action = job.removeprefix('onboard:')
+                        self.desktop_save_blocked(action)
+                        return
                     self.message('Action needs attention', self.logs)
                     if job.startswith('onboard:'):
                         if job in ('onboard:finish', 'onboard:finish-desktop'):
@@ -385,6 +390,41 @@ class App:
 
     def confirm(self, action, title, lines):
         self.modal, self.scroll = ('confirm', action, title, lines), 0
+
+    def check_desktop_state(self):
+        state = dp.desktop_state()
+        self.state.update(desktop_running=state['running'], desktop_background=state['background'])
+        return state
+
+    def desktop_save_blocked(self, action):
+        try:
+            self.check_desktop_state()
+        except (RuntimeError, OSError):
+            self.state.update(desktop_running=None, desktop_background=None)
+        self.confirm('retry_save:' + action, 'Close Claude Desktop to save',
+                     ['Saving needs Claude Desktop and its active sessions to stop first.',
+                      'Quit Claude Desktop with Cmd+Q. If it is already closed, stop any remaining Desktop sessions.',
+                      'Then press Enter to retry saving. Desktop will be closed gracefully if it is open.',
+                      'Your login and setup progress are kept. No profile files were changed.'])
+
+    def request_desktop_save(self, action):
+        if self.demo:
+            self.start(action)
+            return
+        try:
+            state = self.check_desktop_state()
+        except (RuntimeError, OSError) as error:
+            self.message('Cannot check Desktop', [str(error), 'Retry saving once the process check is available.'])
+            return
+        if state['running']:
+            self.confirm('close_save:' + action, 'Close Desktop and save?',
+                         ['Claude Desktop is open. Saving its login requires closing it first.',
+                          'Continue to quit Desktop gracefully, save the login, and reopen it.',
+                          'Running Desktop sessions will pause.'])
+        elif state['background']:
+            self.desktop_save_blocked(action)
+        else:
+            self.start(action)
 
     def items(self):
         if self.page == 'home':
@@ -517,11 +557,16 @@ class App:
                 self.launch_cli(self.label)
             else:
                 self.launch_cli(self.label, authenticate=True)
-        elif action in ('prepare', 'finish', 'prepare-desktop', 'finish-desktop'):
+        elif action in ('finish', 'finish-desktop'):
+            self.request_desktop_save(action)
+        elif action in ('prepare', 'prepare-desktop'):
             self.start_onboarding(action)
-        elif action == 'save' and 'cli' not in self.components:
-            self.confirm('save_desktop', 'Save Desktop login?', [f'Verify and save the signed-in Desktop account as {self.label}.',
-                         'Desktop will quit and reopen. Running Desktop sessions will pause.'])
+        elif action == 'save':
+            reason = disabled_reason(action, self.account, self.state) if 'cli' in self.components else None
+            if reason:
+                self.message('Next step', [reason])
+            else:
+                self.request_desktop_save('save' if 'cli' in self.components else 'save_desktop')
         else:
             reason = disabled_reason(action, self.account, self.state)
             if reason:
@@ -548,6 +593,11 @@ class App:
         self.job = 'onboard:' + action
 
     def start(self, action):
+        if action.startswith(('close_save:', 'retry_save:')):
+            action = action.split(':', 1)[1]
+        if action in ('finish', 'finish-desktop'):
+            self.start_onboarding(action)
+            return
         if action == 'save_desktop':
             self.begin_setup()
             self.start_onboarding('finish')
@@ -658,7 +708,8 @@ class App:
             titles['finish'] = ('Step 2 of 2' if 'cli' not in self.components else 'Step 3 of 3') + ' — Save Desktop login'
             descriptions['finish'] = [f'Desktop is already signed in as {who}.',
                                       'Save this existing login to use it for future account switching.',
-                                      'Desktop briefly closes and reopens while saving.' if self.state.get('desktop_running')
+                                      'You will be asked to close Desktop before saving.' if self.state.get('desktop_running')
+                                      else 'Desktop background tasks must stop before saving.' if self.state.get('desktop_background')
                                       else 'Desktop can stay closed while its login is saved.']
         return titles[stage], descriptions[stage]
 
@@ -741,7 +792,8 @@ class App:
         self.put(3, 2, 'DESKTOP', self.color(4))
         self.put(3, 11, str(desktop), self.color(2 if active else 4), cw-10)
         if running is not None and len(str(desktop)) + 26 < cw:
-            self.put(3, 13+len(str(desktop)), '● running' if running else '○ closed', self.color(2 if running else 4))
+            status = '● running' if running else '◐ background tasks' if self.state.get('desktop_background') else '○ closed'
+            self.put(3, 13+len(str(desktop)), status, self.color(2 if running else 3 if self.state.get('desktop_background') else 4))
         if self.page == 'home':
             y = 5
             if self.state.get('first_run'):
@@ -896,6 +948,10 @@ class App:
         self.put(divider, x+3, '─'*(panel_width-6), self.color(21), panel_width-6)
         label = {'switch': 'Switch', 'save': 'Save login', 'cli': 'Open CLI',
                  'recover': 'Recover', 'sync': 'Sync history'}.get(action, 'Continue')
+        if action and action.startswith('close_save:'):
+            label = 'Close Desktop and save'
+        elif action and action.startswith('retry_save:'):
+            label = 'Retry save'
         primary = ' Enter: ' + (label if kind == 'confirm' else 'Close') + ' '
         secondary = ' Esc: ' + ('Cancel' if kind == 'confirm' else 'Close') + ' '
         self.put(divider+1, x+4, primary, self.color(24) | curses.A_BOLD, len(primary))

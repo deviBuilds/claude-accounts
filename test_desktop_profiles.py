@@ -6,9 +6,53 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import desktop_profiles as dp
+
+
+class DesktopLifecycleTests(unittest.TestCase):
+    def test_process_scan_excludes_crash_reporting_and_zombies_but_keeps_sessions(self):
+        runtime = str(Path.home() / 'Library/Application Support/Claude/claude-code')
+        output = '\n'.join([
+            f'10 1 S {dp.APP}/Contents/MacOS/Claude',
+            f'11 10 S {dp.APP}/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper',
+            f'12 10 S {dp.APP}/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler',
+            f'13 10 Z {dp.APP}/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper',
+            f'20 1 S {runtime}/version/claude',
+            '21 20 S /usr/bin/node', '30 1 S /usr/local/bin/claude'])
+        with patch.object(dp.subprocess, 'run', return_value=SimpleNamespace(stdout=output, returncode=0)):
+            self.assertEqual(dp.desktop_processes(), {10, 11, 20, 21})
+            self.assertEqual(dp.desktop_state(), {'running': True, 'background': False})
+        with patch.object(dp, 'process_records', return_value=[(20, 1, runtime + '/version/claude')]):
+            self.assertEqual(dp.desktop_state(), {'running': False, 'background': True})
+
+    def test_crash_reporter_alone_does_not_block_a_closed_app_save(self):
+        records = [(12, 1, dp.APP + '/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler')]
+        with patch.object(dp, 'process_records', return_value=records), patch.object(dp.subprocess, 'run') as run:
+            self.assertEqual(dp.desktop_state(), {'running': False, 'background': False})
+            dp.quit_app()
+            run.assert_not_called()
+
+    def test_orphaned_session_child_keeps_save_blocked_without_force_killing(self):
+        initial = [(10, 1, dp.APP + '/Contents/MacOS/Claude'), (21, 10, '/usr/bin/node')]
+        orphan = [(21, 1, '/usr/bin/node')]
+        with patch.object(dp, 'process_records', side_effect=[initial, initial] + [orphan]*100), \
+             patch.object(dp.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run, \
+             patch.object(dp.time, 'sleep'), patch.object(dp.os, 'kill') as kill:
+            with self.assertRaisesRegex(dp.DesktopBusyError, 'DESKTOP_BUSY:'):
+                dp.quit_app()
+            self.assertEqual(run.call_args.args[0][0], 'osascript')
+            kill.assert_not_called()
+
+    def test_main_app_quits_gracefully_and_ignores_surviving_crash_reporter(self):
+        initial = [(10, 1, dp.APP + '/Contents/MacOS/Claude')]
+        leftover = [(12, 1, dp.APP + '/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler')]
+        with patch.object(dp, 'process_records', side_effect=[initial, initial, leftover]), \
+             patch.object(dp.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run:
+            dp.quit_app()
+            self.assertEqual(run.call_args.args[0][0], 'osascript')
 
 
 class ProfileTests(unittest.TestCase):

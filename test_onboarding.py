@@ -115,6 +115,22 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(self.manager.index(), previous)
         self.open.assert_called_once()
 
+    def test_busy_finish_does_not_reopen_or_save_before_desktop_has_stopped(self):
+        ob.create(self.manager, 'd')
+        ob.prepare(self.manager, 'd')
+        self.login('d')
+        before = self.manager.index()
+        self.open.reset_mock()
+        self.quit.side_effect = dp.DesktopBusyError('A session is still running.')
+        with patch.object(dp, 'app_running', return_value=True), \
+             patch.object(self.manager, 'snapshot') as snapshot:
+            with self.assertRaises(dp.DesktopBusyError):
+                ob.finish(self.manager, 'd')
+            snapshot.assert_not_called()
+        self.open.assert_not_called()
+        self.assertEqual(self.manager.index(), before)
+        self.assertTrue(ob.progress_path(self.manager, 'd').exists())
+
     def test_unregistered_outgoing_is_saved_without_requiring_its_cli_login(self):
         ob.create(self.manager, 'd')
         (self.manager.root / 'identity').write_text('unknown-id')

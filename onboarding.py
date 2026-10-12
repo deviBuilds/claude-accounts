@@ -116,19 +116,21 @@ def finish(manager, label):
             raise RuntimeError('CLI identity changed; nothing saved.')
         return result
     running = dp.app_running()
+    stopped = False
     manager.identity = checked
     try:
         # Chromium can keep a newly acquired cookie in memory. Quitting flushes
         # its session store; only the resulting cookie is evidence for saving.
         print('Checking the new Desktop login. Closing Desktop gracefully to save its sign-in state.', flush=True)
         dp.quit_app()
+        stopped = True
         if dp.desktop_account(manager.root) != expected['account']:
             raise RuntimeError(f'Desktop must be signed into {expected["email"]}. Choose Open Desktop sign-in to prepare the correct account. '
                                'If your browser selects another account automatically, choose a different account there before approving sign-in.')
         manager.save(label)
     finally:
         manager.identity = original
-        if running:
+        if running and stopped:
             dp.open_app()
     progress_path(manager, label).unlink(missing_ok=True)
     command = 'claude' if label == 'a' else 'claude-' + label
@@ -185,8 +187,10 @@ def finish_desktop(manager, label):
     if pending and pending['label'] != label:
         raise RuntimeError(f'Finish Desktop setup for {pending["label"]} first.')
     running = dp.app_running()
+    stopped = False
     try:
         dp.quit_app()
+        stopped = True
         account = dp.desktop_account(manager.root)
         if not account:
             raise RuntimeError('Desktop is not signed in. Complete sign-in and retry.')
@@ -207,7 +211,7 @@ def finish_desktop(manager, label):
         progress_path(manager, label).unlink(missing_ok=True)
         print(f'Desktop login verified and saved as {label}. CLI was not required.')
     finally:
-        if running:
+        if running and stopped:
             dp.open_app()
 
 def main():

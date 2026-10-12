@@ -90,6 +90,9 @@ installer writes modules to `~/.local/lib/claude-accounts` and shell launchers t
    otherwise choose **Verify and finish setup** after signing in. If running,
    Desktop closes gracefully to flush its login,
    the manager verifies the encrypted login, saves its profile, and reopens it.
+   Saving checks the live process state first: an open app gets a **Close Desktop
+   and save** confirmation. Remaining Desktop sessions get closing instructions
+   and **Retry save**; crash reporters do not block a save. A closed app stays closed.
    With both apps selected, it also checks that the CLI and Desktop identities match.
    Desktop-only profiles display your chosen label because a cookie verifies the
    account ID but does not provide an email address.

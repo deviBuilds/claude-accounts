@@ -35,9 +35,9 @@ def collect(home, read_credentials, identity, usage_loader=None):
     except (RuntimeError, OSError, ValueError) as error:
         active, desktop_detail = None, str(error)
     try:
-        running = dp.app_running() if 'desktop' in components else None
+        lifecycle = dp.desktop_state() if 'desktop' in components else {'running': None, 'background': None}
     except (RuntimeError, OSError):
-        running = None
+        lifecycle = {'running': None, 'background': None}
 
     def inspect(label):
         saved = index.get('profiles', {}).get(label, {})
@@ -82,7 +82,7 @@ def collect(home, read_credentials, identity, usage_loader=None):
             labels = [label for label in labels if label != 'a']
         accounts = list(pool.map(inspect, labels))
     first_run = len(accounts) == 1 and accounts[0]['label'] == 'a' and accounts[0]['cli_state'] in ('missing', 'not_selected') and not index.get('profiles')
-    return {'accounts': accounts, 'desktop_running': running, 'desktop_detail': desktop_detail,
+    return {'accounts': accounts, 'desktop_running': lifecycle['running'], 'desktop_background': lifecycle['background'], 'desktop_detail': desktop_detail,
             'first_run': first_run, 'cli_available': bool(shutil.which('claude')), 'desktop_installed': Path(dp.APP).is_dir(),
             'active_account': active, 'pending_login': index.get('pendingLogin'),
             'recovery_pending': manager.journal.exists(), 'errors': errors, 'checked_at': time.time()}
