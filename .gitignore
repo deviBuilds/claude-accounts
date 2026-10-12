@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.backup-*
+*.bak
+.DS_Store
+.venv/
+.build-venv/
+build/
+dist/
+*.spec
+.claude*/
+claude-accounts-macos*
