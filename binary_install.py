@@ -103,7 +103,7 @@ def install_binary(source, home):
     binaries.mkdir(parents=True, exist_ok=True)
     target = binaries/'claude-accounts'
     helper = binaries/'claude-desktop-sync'
-    for path in (target, helper):
+    for path in (target, helper, binaries/'claude-rotate'):
         if path.is_symlink() or path.is_dir():
             raise RuntimeError(f'Refusing to replace a symlink or directory: {path}')
     with tempfile.TemporaryDirectory(prefix='.claude-accounts-install-', dir=binaries) as directory:
@@ -117,6 +117,10 @@ def install_binary(source, home):
         launcher.write_text('#!/bin/sh\nexec '+shlex.quote(str(target))+' --desktop-helper "$@"\n')
         launcher.chmod(0o755)
         launcher.replace(helper)
+        rotate = staging/'claude-rotate'
+        rotate.write_text('#!/bin/sh\nexec '+shlex.quote(str(target))+' --rotation-helper --run "$@"\n')
+        rotate.chmod(0o755)
+        rotate.replace(binaries/'claude-rotate')
     return target
 
 

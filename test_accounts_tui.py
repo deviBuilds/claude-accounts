@@ -43,6 +43,20 @@ class TuiTests(unittest.TestCase):
         self.screen = Screen()
         self.app = tui.App(self.screen, demo=True)
 
+    def test_rotation_selection_space_and_demo_safety(self):
+        self.app.dispatch('rotation')
+        self.assertEqual(self.app.page, 'rotation')
+        self.app.cursor = 0
+        self.app.key(ord(' '))
+        self.assertEqual(self.app.rotation_selected, ['a'])
+        self.app.key(ord(' '))
+        self.assertEqual(self.app.rotation_selected, [])
+        self.app.start('rotation:enable')
+        self.assertEqual(self.app.modal[2], 'Demo mode')
+        self.app.modal = None
+        self.app.draw()
+        self.assertTrue(any('Space: toggle' in line for line in self.screen.text))
+
     def test_first_run_enters_default_profile_wizard_and_reports_missing_cli(self):
         self.app.state = {'first_run': True, 'cli_available': True,
                           'accounts': [{'label': 'a', 'cli_state': 'missing'}]}

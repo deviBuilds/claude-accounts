@@ -6,7 +6,7 @@ import shlex
 import shutil
 import sys
 
-FILES = ('profile_management.py', 'accounts_tui.py', 'account_status.py', 'account_usage.py', 'cli_refresh.py',
+FILES = ('rotation.py', 'profile_management.py', 'accounts_tui.py', 'account_status.py', 'account_usage.py', 'cli_refresh.py',
          'desktop-sync.py', 'desktop_profiles.py', 'onboarding.py', 'runtime.py', 'setup_options.py')
 
 
@@ -22,12 +22,12 @@ def install(source, home, python):
             shutil.copyfile(src, temporary)
             os.chmod(temporary, 0o644)
             temporary.replace(target)
-    for command, module in [('claude-accounts', 'accounts_tui.py'), ('claude-desktop-sync', 'desktop-sync.py')]:
+    for command, module in [('claude-accounts', 'accounts_tui.py'), ('claude-desktop-sync', 'desktop-sync.py'), ('claude-rotate', 'rotation.py')]:
         launcher = binaries / command
         # Never replace someone else's symlink target.
         if launcher.is_symlink():
             raise RuntimeError(f'Refusing to replace a symlink: {launcher}')
-        launcher.write_text('#!/bin/sh\nexec '+shlex.quote(str(python))+' '+shlex.quote(str(destination/module))+' "$@"\n')
+        launcher.write_text('#!/bin/sh\nexec '+shlex.quote(str(python))+' '+shlex.quote(str(destination/module))+(' --run' if command == 'claude-rotate' else '')+' "$@"\n')
         launcher.chmod(0o755)
     return binaries/'claude-accounts'
 

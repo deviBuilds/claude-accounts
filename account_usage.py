@@ -70,7 +70,7 @@ def fetch(token):
     return normalize(value)
 
 
-def load(home, account, credential=None, now=None, fetcher=fetch):
+def load(home, account, credential=None, now=None, fetcher=fetch, ttl=TTL):
     now = time.time() if now is None else now
     if not account or not re.fullmatch(r'[a-zA-Z0-9-]+', account):
         return {'state': 'unavailable', 'windows': [], 'detail': 'Verify CLI login to load usage.'}
@@ -89,7 +89,7 @@ def load(home, account, credential=None, now=None, fetcher=fetch):
     if credential is None:
         return {**cached, 'state': 'stale' if cached.get('windows') else 'unavailable',
                 'windows': cached.get('windows', []), 'detail': 'Waiting for a valid CLI login.'}
-    next_check, error = now+TTL, None
+    next_check, error = now+ttl, None
     try:
         windows = fetcher(credential['accessToken'])
         result = {'state': 'ready' if windows else 'unavailable', 'windows': windows,
@@ -102,7 +102,7 @@ def load(home, account, credential=None, now=None, fetcher=fetch):
                     delay = TTL
             except (ValueError, TypeError):
                 delay = TTL
-            next_check = now + max(60, min(delay, 3600))
+            next_check = now + max(60, delay)
             error = 'Usage service rate-limited; retrying later.'
         else:
             error = f'Usage unavailable (HTTP {failure.code}).'

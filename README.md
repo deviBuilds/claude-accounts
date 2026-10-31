@@ -233,3 +233,83 @@ Build on each target architecture. Releases default to
 `~/.local/share/claude-accounts/releases`: executable, self-extracting installer,
 SHA-256 manifest and source ZIP. The source ZIP uses an explicit file list; account
 snapshots, usage caches, credentials and build environment files are excluded.
+
+## Automatic CLI account rotation
+
+Open **Auto rotation** in the TUI. Select at least two distinct signed-in CLI
+accounts with **Space**, then choose **Apply selection and enable rotation**.
+Rotation is opt-in. It installs a per-user macOS LaunchAgent, runs immediately,
+and checks selected accounts every 60 seconds while you are logged in. Sleep,
+slow network calls, and server `Retry-After` responses can delay checks.
+
+Use `claude-rotate` in Terminal. For T3Code, configure a Claude provider with:
+
+- **Binary path:** `claude`
+- **CLAUDE_CONFIG_DIR:** the absolute path to `~/.claude-rotate`
+- Leave `HOME` unchanged and remove provider environment overrides such as
+  `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, and `ANTHROPIC_AUTH_TOKEN`.
+
+The shared directory keeps settings, plugins, and local conversations in one
+place. It begins as a new configuration; existing account settings and histories
+are not automatically copied into it. Conversations in this directory may be
+sent under any selected account. Use only accounts authorized for that data.
+
+The monitor keeps the current account while healthy. It tries the original CLI's
+background renewal when an access token expires, and chooses the next eligible
+selected account if renewal fails or a reported usage window reaches 100%.
+Selection follows the order in which profiles were selected. Any reported
+model-specific limit conservatively excludes the account, even if another model
+could still work; paid extra usage is not used to override an exhausted window.
+Network errors and stale usage do not trigger a switch away from the current
+account. If all accounts are exhausted, it waits for a reset. No prompt is
+replayed automatically.
+
+Only access tokens are copied to the shared directory, with private permissions
+and atomic replacement. Refresh tokens remain in the original Keychain profiles.
+This prevents the shared profile and source profile from competing to rotate a
+refresh token. Ordinary quota polls do not run model prompts; expired-login
+renewal uses the existing CLI refresh helper, which may consume a small amount
+of usage. Do not use `/login`, `/logout`, or `claude auth login` in the shared
+directory. Sign in using the original profile and reapply your selection if its
+account identity changed. A conflicting Keychain login in the shared directory
+stops the monitor rather than silently using the wrong account.
+
+### Persistent sessions and limits
+
+Tested with Claude Code **2.1.316**: a persistent `stream-json` CLI reloaded an
+access-token file between requests. A local mock server observed different
+Authorization headers; a live two-account test completed both replies without
+restarting the process. This is observed CLI behavior, not a documented stable
+credential-reload API. Retest when changing CLI versions.
+
+T3Code's current Claude adapter reuses its process across turns. Shared access
+tokens support that lifecycle, but polling cannot guarantee recovery of a request
+already in flight or a turn already waiting for quota. Stop that turn and send a
+new message if it remains blocked. Automatic model requests and background
+subagents can also observe a new token on their next request; rotation is not
+restricted to UI reply boundaries. T3Code may retain a cached account label until
+its provider refreshes. No T3Code application code is modified by this feature.
+
+**Disable rotation** removes the LaunchAgent and stops checks. It does not kill
+running CLI processes, delete shared conversations, or revoke the last access
+token. Existing processes, or T3Code pointed directly at the shared directory,
+can continue using that token until it expires. The `claude-rotate` launcher
+requires rotation to be enabled.
+
+For diagnostics:
+
+```sh
+claude-accounts --rotation-helper --status
+launchctl print gui/$(id -u)/ai.claude-accounts.rotation
+```
+
+The status contains account labels, quota windows and timestamps, never tokens.
+The implementation does not establish Anthropic terms compliance. Review
+[Anthropic's authentication and credential-use guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)
+for your use case; using the official CLI without a proxy does not itself grant
+permission for every multi-account or third-party integration.
+
+The credential-reload regression test uses synthetic credentials and a local mock
+server. Run `CLAUDE_ROTATION_SMOKE=1 python3 -m unittest test_rotation_runtime -q`
+to check your installed CLI without using real account quota. Normal unit tests
+skip this installed-CLI test.

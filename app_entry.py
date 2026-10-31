@@ -23,6 +23,9 @@ def main():
         except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
             print(f'Setup stopped: {error}', file=sys.stderr)
             return 1
+    if sys.argv[1:2] == ['--rotation-helper']:
+        import rotation
+        return rotation.main(sys.argv[2:])
     import accounts_tui
     return accounts_tui.main()
 

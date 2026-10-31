@@ -16,6 +16,7 @@ import threading
 import time
 from cli_refresh import RefreshWorker, environment as profile_environment
 import account_usage
+import rotation
 import runtime
 import setup_options
 import desktop_profiles as dp
@@ -379,6 +380,9 @@ class App:
                             self.wizard['stage'] = 'desktop'
                             self.cursor = 0
                         self.refresh()
+                elif job.startswith('rotation:'):
+                    self.notice = ' '.join(self.logs[-2:]) or 'Rotation check complete.'
+                    self.refresh()
                 elif job.startswith('manage:'):
                     action = job.split(':', 1)[1]
                     if action == 'reset-cli-setup':
@@ -460,9 +464,20 @@ class App:
             if self.state.get('first_run'):
                 rows.insert(0, ('first_account', 'Set up your first account', 'Connect your selected Claude apps'))
             return rows + [('add', '+ Add new account', 'Set up the Claude apps you selected'),
+                           *([('rotation', 'Auto rotation', 'One shared CLI directory; check quotas every minute')] if 'cli' in self.components else []),
                            ('refresh', 'Refresh accounts', 'Check current logins'),
                            ('tools', 'Tools', 'Sync history or recover an interrupted switch'),
                            ('quit', 'Quit', '')]
+        if self.page == 'rotation':
+            selected = getattr(self, 'rotation_selected', [])
+            rows = [('rotate_pick:' + a['label'], ('[x] ' if a['label'] in selected else '[ ] ') + a['label'] + '  ' + str(a.get('cli_email') or a.get('email') or 'Sign-in needed'),
+                     'Space: toggle participation. Identities are verified when enabling.')
+                    for a in self.state.get('accounts', []) if a.get('cli_state') != 'not_selected']
+            return rows + [('rotate_enable', 'Apply selection and enable rotation', 'Start a LaunchAgent with 60-second checks'),
+                           ('rotate_disable', 'Disable rotation', 'Stop checks; retain shared sessions and existing processes'),
+                           ('rotate_check', 'Check now', 'Refresh account health and rotation status'),
+                           ('rotate_help', 'T3Code setup and behavior', 'Learn how shared access tokens and separate refresh ownership work'),
+                           ('back', 'Back to accounts', '')]
         if self.page == 'account':
             a = self.account or {}
             desktop = [('switch', 'Switch Desktop to this account', 'Save the current account automatically, then restore this login')] if a.get('desktop_saved') and not a.get('desktop_active') and not a.get('identity_drift') else []
@@ -569,6 +584,42 @@ class App:
             return
         if self.cli_worker and self.label == self.cli_worker.label and action in ('cli', 'auth', 'wizard_auth', 'wizard_cli', 'setup', 'save', 'prepare', 'finish', 'verify_cli', 'retry_refresh', 'change_cli', 'cli_to_desktop', 'change_desktop', 'desktop_to_cli', 'repair_bindings', 'remove_profile'):
             self.notice = 'This CLI login is refreshing in the background. Please wait before using its login actions.'
+            return
+        if action == 'rotation':
+            status = rotation.Rotation().status() if not self.demo else {'accounts': []}
+            self.rotation_selected = [a['label'] for a in status['accounts']]
+            self.goto('rotation')
+            return
+        if action.startswith('rotate_pick:'):
+            label = action.split(':', 1)[1]
+            if label in self.rotation_selected:
+                self.rotation_selected.remove(label)
+            else:
+                self.rotation_selected.append(label)
+            return
+        if action == 'rotate_enable':
+            self.confirm('rotation:enable', 'Enable automatic account rotation?',
+                         ['Selected profiles: ' + ', '.join(self.rotation_selected),
+                          'Conversations in ~/.claude-rotate are shared across these accounts.',
+                          'A LaunchAgent checks every minute, refreshes expired logins, and changes accounts when a reported limit is exhausted.',
+                          'Existing requests are not restarted or replayed. A new request can use the next account.',
+                          'Refresh tokens remain in original profiles. Select at least two distinct signed-in accounts.'])
+            return
+        if action == 'rotate_disable':
+            self.start('rotation:disable')
+            return
+        if action == 'rotate_check':
+            self.start('rotation:tick')
+            return
+        if action == 'rotate_help':
+            self.message('Auto rotation / T3Code', [
+                'T3Code: Binary path = claude; CLAUDE_CONFIG_DIR = ' + str(Path.home()/'.claude-rotate'),
+                'Terminal: use claude-rotate. Do not use /login or /logout inside the shared profile.',
+                'Checks run every 60 seconds, subject to server backoff. Rotation keeps the active account until a reported limit is exhausted or renewal fails.',
+                'Any reported model limit conservatively makes an account ineligible.',
+                'The tested CLI reloads shared access tokens on its next API request. In-flight requests are not killed or replayed.',
+                'A turn already waiting for quota may need Stop then a new message.',
+                'If all accounts are unavailable, rotation waits. Original profiles and Desktop logins are unchanged.'])
             return
         if action.startswith('account:'):
             self.label = action.split(':', 1)[1]
@@ -690,6 +741,21 @@ class App:
     def start(self, action):
         if action.startswith(('close_save:', 'stop_save:', 'retry_save:')):
             action = action.split(':', 1)[1]
+        if action.startswith('rotation:'):
+            if self.demo:
+                self.message('Demo mode', ['Rotation changes are disabled.'])
+                return
+            mode = action.split(':', 1)[1]
+            args = ['--' + mode]
+            if mode == 'enable':
+                if len(self.rotation_selected) < 2:
+                    self.message('Select accounts', ['Select at least two signed-in CLI profiles using Space.'])
+                    return
+                args += self.rotation_selected
+            self.logs = []
+            self.worker = Worker(runtime.command(Path(__file__).with_name('rotation.py'), *args))
+            self.job = action
+            return
         if action.startswith('manage:'):
             if self.demo:
                 self.message('Demo mode', ['Profile changes are disabled.'])
@@ -782,6 +848,13 @@ class App:
             self.refresh()
 
     def header(self):
+        if self.page == 'rotation':
+            status = rotation.Rotation().status() if not self.demo else {'enabled': False}
+            profiles = ['Profile ' + row['label'] + ': ' + row['state'] + (' — '+row['detail'] if row.get('detail') else '') + '  ' + ' / '.join(account_usage.summary(w) for w in row.get('usage', {}).get('windows', [])[:2]) for row in status.get('profiles', [])]
+            return 'Auto rotation / CLI', [
+                ('Enabled' if status['enabled'] else 'Disabled') + ' | Active: ' + str(status.get('active') or 'none') + ' | Poll: 60 seconds',
+                ('Monitor has not checked recently. Use Check now; re-enable if needed.' if status.get('stale') and status['enabled'] else status.get('detail', 'Choose accounts with Space, then enable.')),
+                'Shared config and sessions: ~/.claude-rotate'] + profiles
         if self.page == 'home':
             return 'Choose an account', ['One selection at a time. Press Enter to open it.']
         if self.page == 'removed':
@@ -1023,7 +1096,7 @@ class App:
                 selected_account = next(a for a in self.state['accounts'] if a['label'] == rows[self.cursor][0].split(':', 1)[1])
                 detail = ('Manage the login for the current Desktop account.' if selected_account.get('desktop_active')
                           else 'Open this account to switch Desktop or manage its login.')
-            footer = '↑/↓ move   Enter: select   Esc: back'
+            footer = ('↑/↓ move   Space: toggle   Enter: select   Esc: back' if self.page == 'rotation' else '↑/↓ move   Enter: select   Esc: back')
             if sum(kind == 'item' for kind, _, _ in blocks) < len(rows):
                 footer += f'   {self.cursor+1}/{len(rows)}'
         y = min(y+1, height-4)
@@ -1155,6 +1228,8 @@ class App:
         if key in (curses.KEY_UP, ord('k'), curses.KEY_DOWN, ord('j')):
             delta = -1 if key in (curses.KEY_UP, ord('k')) else 1
             self.cursor = (self.cursor+delta) % max(1, len(rows))
+        elif key == ord(' ') and self.page == 'rotation' and rows and rows[self.cursor][0].startswith('rotate_pick:'):
+            self.dispatch(rows[self.cursor][0])
         elif key in (10, 13, curses.KEY_ENTER) and rows:
             self.dispatch(rows[self.cursor][0])
         elif key == 27:
