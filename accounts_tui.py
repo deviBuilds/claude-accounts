@@ -1389,14 +1389,32 @@ class App:
                 if key != -1:
                     self.key(key)
         except KeyboardInterrupt:
-            pass
+            interrupted = True
         finally:
             # Keep the non-raising handler installed throughout cleanup. Repeated
             # Ctrl+C must not interrupt worker shutdown or curses restoration.
             if self.cli_worker:
                 self.cli_worker.close()
+            if interrupted:
+                # Erase the alternate screen before endwin can save it in history.
+                try:
+                    self.screen.erase()
+                    self.screen.refresh()
+                except curses.error:
+                    pass
             signal.signal(signal.SIGINT, previous)
         return 130 if interrupted else 0
+
+
+def clear_terminal_after_interrupt():
+    if sys.stdout.isatty():
+        try:
+            # Run after curses restores the shell screen: clear the visible
+            # screen, then scrollback, and put the shell prompt at the top.
+            sys.stdout.write('\x1b[2J\x1b[3J\x1b[H')
+            sys.stdout.flush()
+        except OSError:
+            pass
 
 
 def main(argv=None):
@@ -1433,14 +1451,16 @@ def main(argv=None):
         print('Open claude-accounts in an interactive terminal. Use claude-desktop-sync --status-json for scripts.', file=sys.stderr)
         return 2
     try:
-        return curses.wrapper(lambda screen: App(screen, args.demo, args.onboard).run()) or 0
+        result = curses.wrapper(lambda screen: App(screen, args.demo, args.onboard).run()) or 0
     except KeyboardInterrupt:
         # Covers startup and the small window after restoring the old handler.
-        return 130
+        result = 130
     except curses.error:
         print('The terminal could not be initialized. Use a terminal with TERM=xterm-256color.', file=sys.stderr)
         return 1
-    return 0
+    if result == 130:
+        clear_terminal_after_interrupt()
+    return result
 
 
 if __name__ == '__main__':

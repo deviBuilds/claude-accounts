@@ -133,8 +133,9 @@ class TuiTests(unittest.TestCase):
         self.assertFalse(self.app.running)
 
     def test_keyboard_interrupt_during_curses_startup_is_clean(self):
-        with patch.object(sys.stdin, 'isatty', return_value=True), patch.object(sys.stdout, 'isatty', return_value=True), patch('curses.wrapper', side_effect=KeyboardInterrupt):
+        with patch.object(sys.stdin, 'isatty', return_value=True), patch.object(sys.stdout, 'isatty', return_value=True), patch('curses.wrapper', side_effect=KeyboardInterrupt), patch.object(tui, 'clear_terminal_after_interrupt') as clear:
             self.assertEqual(tui.main(['--demo']), 130)
+            clear.assert_called_once_with()
 
     def test_first_run_enters_default_profile_wizard_and_reports_missing_cli(self):
         self.app.state = {'first_run': True, 'cli_available': True,
