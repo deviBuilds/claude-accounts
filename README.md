@@ -236,7 +236,7 @@ snapshots, usage caches, credentials and build environment files are excluded.
 
 ## Automatic CLI account rotation
 
-Open **Auto rotation** in the TUI. Select at least two distinct signed-in CLI
+Open **Tools → Auto rotation** in the TUI. Select at least two distinct signed-in CLI
 accounts with **Space**, then choose **Apply selection and enable rotation**.
 Rotation is opt-in. It installs a per-user macOS LaunchAgent, runs immediately,
 and checks selected accounts every 60 seconds while you are logged in. Sleep,

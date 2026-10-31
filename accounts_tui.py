@@ -150,6 +150,7 @@ class App:
                 17: (217, 52), 18: (81, 235), 19: (183, 235),
                 20: (240, -1), 21: (67, 235), 22: (221, 235),
                 23: (232, 232), 24: (16, 81),
+                25: (114, 235), 26: (210, 235), 27: (114, 24), 28: (221, 24), 29: (210, 24),
             }
             fallback = {
                 1: (6, -1), 2: (2, -1), 3: (3, -1), 4: (7, -1),
@@ -160,6 +161,7 @@ class App:
                 17: (7, 1), 18: (6, -1), 19: (5, -1),
                 20: (7, -1), 21: (6, -1), 22: (3, -1),
                 23: (0, 0), 24: (0, 6),
+                25: (2, -1), 26: (1, -1), 27: (2, 4), 28: (3, 4), 29: (1, 4),
             }
             for n, (fg, bg) in (palette if curses.COLORS >= 256 else fallback).items():
                 curses.init_pair(n, fg, bg)
@@ -450,6 +452,21 @@ class App:
         else:
             self.start(action)
 
+    def rotation_status(self):
+        return rotation.Rotation().status() if not self.demo else {'enabled': False, 'accounts': []}
+
+    def rotation_health(self, status):
+        if not status['enabled']:
+            return 'DISABLED', 13
+        if status.get('state') == 'error':
+            return 'ERROR', 17
+        if not status.get('checked_at'):
+            return 'AWAITING FIRST CHECK', 15
+        if status.get('stale'):
+            return 'MONITOR DELAYED', 15
+        return {'ready': ('RUNNING', 14), 'waiting': ('WAITING FOR ACCOUNT', 15),
+                'unknown': ('CHECK UNAVAILABLE', 15)}.get(status.get('state'), ('CHECKING', 16))
+
     def rotation_accounts(self):
         now = time.time()
         return [row for row in self.state.get('accounts', [])
@@ -474,7 +491,6 @@ class App:
             if self.state.get('first_run'):
                 rows.insert(0, ('first_account', 'Set up your first account', 'Connect your selected Claude apps'))
             return rows + [('add', '+ Add new account', 'Set up the Claude apps you selected'),
-                           *([('rotation', 'Auto rotation', 'One shared CLI directory; check quotas every minute')] if 'cli' in self.components else []),
                            ('refresh', 'Refresh accounts', 'Check current logins'),
                            ('tools', 'Tools', 'Sync history or recover an interrupted switch'),
                            ('quit', 'Quit', '')]
@@ -482,13 +498,20 @@ class App:
             self.prune_rotation_selection()
             selected = self.rotation_selected
             rows = [('rotate_pick:' + a['label'], ('[x] ' if a['label'] in selected else '[ ] ') + a['label'] + '  ' + str(a.get('cli_email') or a.get('email') or 'Sign-in needed'),
-                     'Space: toggle participation. Identities are verified when enabling.')
+                     'Selected. Space to remove; save your changes to apply.' if a['label'] in selected else 'Not selected. Space to include this account.')
                     for a in self.rotation_accounts()]
-            return rows + [('rotate_enable', 'Apply selection and enable rotation', 'Start a LaunchAgent with 60-second checks'),
-                           ('rotate_disable', 'Disable rotation', 'Stop checks; retain shared sessions and existing processes'),
-                           ('rotate_check', 'Check now', 'Refresh account health and rotation status'),
-                           ('rotate_help', 'T3Code setup and behavior', 'Learn how shared access tokens and separate refresh ownership work'),
-                           ('back', 'Back to accounts', '')]
+            status = self.rotation_status()
+            actions = []
+            if len(selected) >= 2 and (not status['enabled'] or selected != [a['label'] for a in status.get('accounts', [])]):
+                actions.append(('rotate_enable', 'Save account selection' if status['enabled'] else 'Enable auto rotation',
+                                'Apply the selected accounts to the background monitor'))
+            if status['enabled']:
+                actions += [('rotate_check', 'Check quotas now', 'Run a fresh rotation check'),
+                            ('rotate_disable', 'Disable auto rotation', 'Stop checks; keep shared sessions')]
+            else:
+                actions.append(('refresh', 'Refresh CLI logins', 'Check sign-ins; only valid CLI sessions appear here'))
+            return rows + actions + [('rotate_help', 'T3Code setup & details', 'Shared directory, quota handling and recovery'),
+                                     ('back', 'Back to Tools', '')]
         if self.page == 'account':
             a = self.account or {}
             desktop = [('switch', 'Switch Desktop to this account', 'Save the current account automatically, then restore this login')] if a.get('desktop_saved') and not a.get('desktop_active') and not a.get('identity_drift') else []
@@ -548,6 +571,8 @@ class App:
             rows = [('sync', 'Sync local Code session history', 'Copy local session entries across accounts')] if set(setup_options.CHOICES).issubset(self.components) else []
             if self.state.get('recovery_pending'):
                 rows.insert(0, ('recover', 'Recover interrupted switch', 'Restore the original Desktop profile'))
+            if 'cli' in self.components:
+                rows.insert(0, ('rotation', 'Auto rotation', 'Manage background CLI account rotation'))
             return rows + [('removed', 'Removed profiles', 'Restore a profile removed from the manager'), ('back', 'Back to accounts', '')]
         if self.page == 'wizard':
             stage = self.wizard['stage']
@@ -597,7 +622,7 @@ class App:
             self.notice = 'This CLI login is refreshing in the background. Please wait before using its login actions.'
             return
         if action == 'rotation':
-            status = rotation.Rotation().status() if not self.demo else {'accounts': []}
+            status = self.rotation_status()
             self.rotation_selected = [a['label'] for a in status['accounts']]
             self.prune_rotation_selection()
             self.goto('rotation')
@@ -642,8 +667,8 @@ class App:
             self.goto('account')
         elif action in ('manage', 'reconcile_menu', 'desktop_change', 'removed'):
             self.goto({'reconcile_menu': 'reconcile'}.get(action, action))
-        elif action == 'back' and self.page in ('manage', 'reconcile', 'desktop_change', 'removed'):
-            self.goto('tools' if self.page == 'removed' else 'account')
+        elif action == 'back' and self.page in ('manage', 'reconcile', 'desktop_change', 'removed', 'rotation'):
+            self.goto('tools' if self.page in ('removed', 'rotation') else 'account')
         elif action.startswith('restore:'):
             self.label = action.split(':', 1)[1]
             self.confirm('manage:restore', 'Restore profile ' + self.label + '?', ['Show the retained CLI and Desktop logins in the manager again.'])
@@ -866,13 +891,7 @@ class App:
 
     def header(self):
         if self.page == 'rotation':
-            status = rotation.Rotation().status() if not self.demo else {'enabled': False}
-            profiles = ['Profile ' + row['label'] + ': ' + row['state'] + (' — '+row['detail'] if row.get('detail') else '') + '  ' + ' / '.join(account_usage.summary(w) for w in row.get('usage', {}).get('windows', [])[:2]) for row in status.get('profiles', [])]
-            return 'Auto rotation / CLI', [
-                ('Enabled' if status['enabled'] else 'Disabled') + ' | Active: ' + str(status.get('active') or 'none') + ' | Poll: 60 seconds',
-                ('Monitor has not checked recently. Use Check now; re-enable if needed.' if status.get('stale') and status['enabled'] else status.get('detail', 'Choose accounts with Space, then enable.')),
-                'Only verified, valid CLI logins are listed. Sign in or refresh missing accounts from the main menu.',
-                'Shared config and sessions: ~/.claude-rotate'] + profiles
+            return 'Tools / Auto rotation', []
         if self.page == 'home':
             return 'Choose an account', ['One selection at a time. Press Enter to open it.']
         if self.page == 'removed':
@@ -1000,6 +1019,84 @@ class App:
         if not curses.has_colors() and selected:
             self.put(y, 2, '>', curses.A_BOLD)
 
+    def rotation_panel(self, width, height):
+        status = self.rotation_status()
+        self.prune_rotation_selection()
+        self.put(3, 2, 'TOOLS / AUTO ROTATION', self.color(1) | curses.A_BOLD, width)
+        for line in range(5, 9 if height >= 30 else 8):
+            self.fill(line, 2, width, 7)
+        health, role = self.rotation_health(status)
+        x = self.badge(5, 4, health, role, width+2)
+        self.put(5, x, 'Checks every 60s', self.color(13), width-x)
+        active = status.get('active')
+        account = next((a for a in self.state.get('accounts', []) if a['label'] == active), {})
+        name = account.get('cli_email') or account.get('email') or active
+        active_text = ('ACTIVE  ' if status['enabled'] and health == 'RUNNING' else 'LAST USED  ') + str(name) if active else 'No active account'
+        self.put(6, 4, active_text, self.color(25 if status['enabled'] and health == 'RUNNING' else 13), width-4)
+        saved = [a['label'] for a in status.get('accounts', [])]
+        dirty = self.rotation_selected != saved
+        selection = str(len(self.rotation_selected)) + ' accounts selected'
+        selection += '  •  Select at least 2 to save' if len(self.rotation_selected) < 2 else '  •  Unsaved selection' if dirty else '  •  Selection saved' if status['enabled'] else '  •  Select at least 2 to enable'
+        self.put(7, 4, selection, self.color(22 if dirty else 13), width-4)
+        if height >= 30:
+            stamp = status.get('checked_at')
+            checked = 'Last check: '+time.strftime('%H:%M:%S', time.localtime(stamp)) if stamp else 'No checks yet'
+            if health in ('ERROR', 'MONITOR DELAYED', 'CHECK UNAVAILABLE', 'WAITING FOR ACCOUNT'):
+                checked += '  •  '+status.get('detail', 'Use Check quotas now to retry.')
+            else:
+                checked += '  •  Shared sessions: ~/.claude-rotate'
+            self.put(8, 4, checked, self.color(22 if role in (15, 17) else 13), width-4)
+        y = 10 if height >= 30 else 9
+        if not self.rotation_accounts() and height >= 30:
+            self.put(y, 2, 'No valid CLI logins. Sign in from Accounts, then refresh here.', self.color(3), width)
+            y += 2
+        return y
+
+    def rotation_card(self, y, row, focused, width, compact=False):
+        status = self.rotation_status()
+        label = row['label']
+        chosen = label in self.rotation_selected
+        base = 8 if focused else 7
+        lines = 2 if compact else 4
+        for offset in range(lines):
+            self.fill(y+offset, 2, width, base)
+            self.put(y+offset, 2, '▌' if focused else '│', self.color(10 if focused else 18))
+        self.put(y, 5, '[x]' if chosen else '[ ]', self.color(10 if focused else 25 if chosen else 13) | curses.A_BOLD)
+        self.put(y, 10, label+'  '+str(row.get('cli_email') or row.get('email')), self.color(base) | curses.A_BOLD, width-9)
+        monitored = next((p for p in status.get('profiles', []) if p['label'] == label), {})
+        state = monitored.get('state', 'ready') if status['enabled'] else 'ready'
+        text, role = {'ready': ('CLI VALID', 16), 'limited': ('LIMIT REACHED', 15),
+                      'auth': ('SIGN-IN NEEDED', 17), 'unknown': ('CHECK UNAVAILABLE', 15),
+                      'changed': ('ACCOUNT CHANGED', 17), 'removed': ('REMOVED', 15)}.get(state, ('CHECKING', 16))
+        if status['enabled'] and status.get('active') == label:
+            if state == 'ready' and self.rotation_health(status)[0] == 'RUNNING':
+                text, role = 'ACTIVE NOW', 14
+            else:
+                text, role = 'LAST USED • CHECK STATUS', 15
+        x = self.badge(y+1, 5, text, role, width+2)
+        self.put(y+1, x, 'Selected for rotation' if chosen else 'Not selected', self.color(9 if focused else 13), width-x)
+        if compact:
+            return
+        usage = monitored.get('usage') or row.get('usage') or {}
+        if status['enabled'] and status.get('stale'):
+            usage = {**usage, 'state': 'stale'}
+        windows = [w for w in usage.get('windows', []) if w['key'] in ('session', 'weekly_all')]
+        for offset, window in enumerate(windows[:2], 2):
+            percent = window['percent']
+            filled = min(10, max(0, round(percent/10)))
+            short = '5h' if window['key'] == 'session' else '7d'
+            bar = short+' ['+'█'*filled+'░'*(10-filled)+f'] {percent:g}% used'
+            color = (29 if focused else 26) if percent >= 100 else (28 if focused else 22) if percent >= 80 or usage.get('state') != 'ready' else (27 if focused else 25)
+            self.put(y+offset, 5, bar, self.color(color), width-4)
+            stamp = window.get('resets_at')
+            reset = 'resets '+time.strftime('%a %H:%M', time.localtime(stamp))+' ('+account_usage.countdown(stamp)+')' if stamp else 'Reset time unavailable'
+            if usage.get('state') != 'ready':
+                reset = 'STALE • '+reset
+            self.put(y+offset, 5+len(bar)+2, reset, self.color(9 if focused else 13), width-len(bar)-7)
+        if not windows:
+            self.put(y+2, 5, 'Usage not available yet', self.color(9 if focused else 13), width-4)
+            self.put(y+3, 5, 'Use Check quotas now' if status['enabled'] else 'Usage will update when rotation is enabled', self.color(9 if focused else 13), width-4)
+
     def draw(self):
         self.screen.erase()
         height, width = self.screen.getmaxyx()
@@ -1014,47 +1111,50 @@ class App:
         self.put(1, 4, 'CLAUDE ACCOUNTS', curses.A_BOLD | self.color(18))
         if self.demo:
             self.put(1, 23, 'DEMO', self.color(19))
-        active = next((a for a in self.state.get('accounts', []) if a.get('desktop_active')), None)
-        desktop = self.state.get('active_email') or ((active.get('desktop_email') or active.get('desktop_account') or active.get('email') or active['label']) if active else self.state.get('desktop_detail', 'Checking...'))
-        running = self.state.get('desktop_running')
-        self.put(3, 2, 'DESKTOP', self.color(4))
-        self.put(3, 11, str(desktop), self.color(2 if active else 4), cw-10)
-        if running is not None and len(str(desktop)) + 26 < cw:
-            status = '● running' if running else '◐ background tasks' if self.state.get('desktop_background') else '○ closed'
-            self.put(3, 13+len(str(desktop)), status, self.color(2 if running else 3 if self.state.get('desktop_background') else 4))
-        if self.page == 'home':
-            y = 5
-            if self.state.get('first_run'):
-                self.put(y, 2, 'WELCOME — connect your first Claude account', self.color(1) | curses.A_BOLD, cw)
-                self.put(y+1, 2, 'Sign into the Claude apps you selected during installation.', self.color(4), cw)
-                y += 3
+        if self.page == 'rotation':
+            y = self.rotation_panel(cw, height)
         else:
-            title, intro = self.header()
-            self.put(5, 2, title, curses.A_BOLD | self.color(1), cw)
-            y = 7
-            if self.page == 'wizard':
-                stage = self.wizard['stage']
-                current = {'name': 0, 'cli': 0, 'desktop': 1, 'finish': 2, 'complete': 3}[stage]
-                x = 2
-                steps = ('1 CLI', '2 Desktop', '3 Save')
-                if 'cli' not in self.components:
-                    steps = ('1 Desktop', '2 Save')
-                    current = {'name': 0, 'desktop': 0, 'finish': 1, 'complete': 2}.get(stage, 0)
-                elif 'desktop' not in self.components:
-                    steps = ('1 CLI',)
-                    current = 1 if stage == 'complete' else 0
-                for i, step in enumerate(steps):
-                    x = self.badge(y, x, step, 14 if i < current else 16 if i == current else 13, cw+2)
-                y += 2
-            # Keep enough room for an actionable menu even in a short terminal.
-            lines = [part for line in intro for part in (textwrap.wrap(clean(line), cw) or [''])]
-            budget = max(1, height-y-8)
-            for line in lines[:budget]:
-                self.put(y, 2, line, self.color(2 if line == 'Already selected in Desktop.' else 4), cw)
+            active = next((a for a in self.state.get('accounts', []) if a.get('desktop_active')), None)
+            desktop = self.state.get('active_email') or ((active.get('desktop_email') or active.get('desktop_account') or active.get('email') or active['label']) if active else self.state.get('desktop_detail', 'Checking...'))
+            running = self.state.get('desktop_running')
+            self.put(3, 2, 'DESKTOP', self.color(4))
+            self.put(3, 11, str(desktop), self.color(2 if active else 4), cw-10)
+            if running is not None and len(str(desktop)) + 26 < cw:
+                status = '● running' if running else '◐ background tasks' if self.state.get('desktop_background') else '○ closed'
+                self.put(3, 13+len(str(desktop)), status, self.color(2 if running else 3 if self.state.get('desktop_background') else 4))
+            if self.page == 'home':
+                y = 5
+                if self.state.get('first_run'):
+                    self.put(y, 2, 'WELCOME — connect your first Claude account', self.color(1) | curses.A_BOLD, cw)
+                    self.put(y+1, 2, 'Sign into the Claude apps you selected during installation.', self.color(4), cw)
+                    y += 3
+            else:
+                title, intro = self.header()
+                self.put(5, 2, title, curses.A_BOLD | self.color(1), cw)
+                y = 7
+                if self.page == 'wizard':
+                    stage = self.wizard['stage']
+                    current = {'name': 0, 'cli': 0, 'desktop': 1, 'finish': 2, 'complete': 3}[stage]
+                    x = 2
+                    steps = ('1 CLI', '2 Desktop', '3 Save')
+                    if 'cli' not in self.components:
+                        steps = ('1 Desktop', '2 Save')
+                        current = {'name': 0, 'desktop': 0, 'finish': 1, 'complete': 2}.get(stage, 0)
+                    elif 'desktop' not in self.components:
+                        steps = ('1 CLI',)
+                        current = 1 if stage == 'complete' else 0
+                    for i, step in enumerate(steps):
+                        x = self.badge(y, x, step, 14 if i < current else 16 if i == current else 13, cw+2)
+                    y += 2
+                # Keep enough room for an actionable menu even in a short terminal.
+                lines = [part for line in intro for part in (textwrap.wrap(clean(line), cw) or [''])]
+                budget = max(1, height-y-8)
+                for line in lines[:budget]:
+                    self.put(y, 2, line, self.color(2 if line == 'Already selected in Desktop.' else 4), cw)
+                    y += 1
+                if len(lines) > budget:
+                    self.put(y-1, cw-1, '…', self.color(4))
                 y += 1
-            if len(lines) > budget:
-                self.put(y-1, cw-1, '…', self.color(4))
-            y += 1
         name_input = self.page == 'wizard' and self.wizard['stage'] == 'name'
         if name_input:
             self.fill(y, 2, cw, 8)
@@ -1071,9 +1171,11 @@ class App:
                 result, position, previous = [], y, None
                 for i in range(start, len(rows)):
                     action = rows[i][0]
-                    group = 'ACCOUNTS' if action.startswith('account:') else 'ACTIONS'
-                    heading = self.page == 'home' and group != previous
+                    group = ('ACCOUNTS • SPACE TO SELECT' if self.page == 'rotation' else 'ACCOUNTS') if action.startswith(('account:', 'rotate_pick:')) else 'ACTIONS'
+                    heading = self.page in ('home', 'rotation') and group != previous
                     size = (6 if next(a for a in self.state['accounts'] if a['label'] == action.split(':', 1)[1]).get('identity_drift') else 5) if action.startswith('account:') else 1
+                    if action.startswith('rotate_pick:'):
+                        size = 3 if height < 30 else 5
                     if position + size + int(heading) > height-5:
                         break
                     if heading:
@@ -1096,15 +1198,20 @@ class App:
                     continue
                 action, name, _ = rows[value]
                 selected = value == self.cursor
-                if action.startswith('account:'):
+                if action.startswith('rotate_pick:'):
+                    row = next(a for a in self.rotation_accounts() if a['label'] == action.split(':', 1)[1])
+                    self.rotation_card(line, row, selected, cw, compact=height < 30)
+                elif action.startswith('account:'):
                     row = next(a for a in self.state['accounts'] if a['label'] == action.split(':', 1)[1])
                     self.account_card(line, row, selected, cw)
                 else:
                     self.fill(line, 2, cw, 8 if selected else 7)
-                    icon = '›' if selected else '+' if action == 'add' else '‹' if action in ('back', 'pause', 'done') else '·'
-                    self.put(line, 3, icon, self.color(10 if selected else 19))
+                    icon = '›' if selected else '+' if action in ('add', 'rotate_enable') else '‹' if action in ('back', 'pause', 'done') else '·'
+                    if self.page == 'rotation' and not selected:
+                        icon = {'rotate_enable': '+', 'rotate_disable': '■', 'rotate_check': '↻', 'refresh': '↻', 'rotate_help': '?', 'back': '‹'}.get(action, icon)
+                    self.put(line, 3, icon, self.color(10 if selected else 26 if action == 'rotate_disable' else 19))
                     self.put(line, 6, name.removeprefix('+ '),
-                             self.color(8 if selected else 19 if action == 'add' else 7) | (curses.A_BOLD if selected or action == 'add' else 0), cw-5)
+                             self.color(8 if selected else 25 if action == 'rotate_enable' else 26 if action == 'rotate_disable' else 19 if action in ('add', 'rotate_help') else 7) | (curses.A_BOLD if selected or action == 'add' else 0), cw-5)
                     if not curses.has_colors() and selected:
                         self.put(line, 3, '>', curses.A_BOLD)
             y = end

@@ -78,6 +78,43 @@ class TuiTests(unittest.TestCase):
         self.assertEqual(self.app.items()[0][0], 'rotate_pick:ready')
         self.assertEqual(self.app.rotation_selected, [])
 
+    def test_rotation_lives_under_tools_and_returns_there(self):
+        self.assertNotIn('rotation', [r[0] for r in self.app.items()])
+        self.app.dispatch('tools')
+        self.assertIn('rotation', [r[0] for r in self.app.items()])
+        self.app.dispatch('rotation')
+        self.app.key(27)
+        self.assertEqual(self.app.page, 'tools')
+
+    def test_rotation_visual_groups_health_and_contextual_actions(self):
+        self.app.dispatch('rotation')
+        self.app.rotation_selected = ['b', 'c']
+        self.app.rotation_status = lambda: {'enabled': True, 'active': 'b', 'state': 'ready',
+            'checked_at': time.time(), 'accounts': [{'label': 'b'}, {'label': 'c'}]}
+        self.screen.size = (42, 110)
+        self.app.draw()
+        text = ' '.join(self.screen.text)
+        for label in ('RUNNING', 'ACTIVE NOW', 'ACCOUNTS • SPACE TO SELECT', 'ACTIONS', 'Selection saved'):
+            self.assertIn(label, text)
+        self.assertNotIn('rotate_enable', [r[0] for r in self.app.items()])
+        self.app.rotation_status = lambda: {'enabled': False, 'accounts': []}
+        self.assertIn('rotate_enable', [r[0] for r in self.app.items()])
+        self.assertNotIn('rotate_disable', [r[0] for r in self.app.items()])
+        self.assertEqual(self.app.rotation_health({'enabled': True, 'checked_at': 1, 'stale': True}), ('MONITOR DELAYED', 15))
+        self.assertEqual(self.app.rotation_health({'enabled': True, 'state': 'error'}), ('ERROR', 17))
+
+    def test_rotation_small_terminal_keeps_every_action_reachable(self):
+        self.app.dispatch('rotation')
+        self.app.rotation_selected = ['b', 'c']
+        self.screen.size = (20, 60)
+        for i, (_, title, _) in enumerate(self.app.items()):
+            self.app.cursor = i
+            self.app.draw()
+            text = ' '.join(self.screen.text)
+            self.assertIn('Space: toggle', text)
+            if not title.startswith('['):
+                self.assertIn(title, text)
+
     def test_first_run_enters_default_profile_wizard_and_reports_missing_cli(self):
         self.app.state = {'first_run': True, 'cli_available': True,
                           'accounts': [{'label': 'a', 'cli_state': 'missing'}]}
