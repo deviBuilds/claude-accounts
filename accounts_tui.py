@@ -1375,12 +1375,13 @@ class App:
 
     def run(self):
         interrupted = False
+        closing = False
         def interrupt(*_):
             nonlocal interrupted
-            if not self.worker:
+            if not closing and not self.worker:
                 interrupted = True
                 self.running = False
-        previous = signal.signal(signal.SIGINT, interrupt)
+        signal.signal(signal.SIGINT, interrupt)
         try:
             while self.running:
                 self.poll()
@@ -1391,11 +1392,12 @@ class App:
         except KeyboardInterrupt:
             interrupted = True
         finally:
-            # Keep the non-raising handler installed throughout cleanup. Repeated
-            # Ctrl+C must not interrupt worker shutdown or curses restoration.
+            # This is the application's final loop. Keep its non-raising handler
+            # through worker cleanup AND curses.wrapper's later endwin(), until
+            # the process entrypoint protects the remaining interpreter shutdown.
+            closing = True
             if self.cli_worker:
                 self.cli_worker.close()
-            signal.signal(signal.SIGINT, previous)
         return 130 if interrupted else 0
 
 
@@ -1435,7 +1437,7 @@ def main(argv=None):
     try:
         result = curses.wrapper(lambda screen: App(screen, args.demo, args.onboard).run()) or 0
     except KeyboardInterrupt:
-        # Covers startup and the small window after restoring the old handler.
+        # Covers startup before the TUI's non-raising handler is installed.
         result = 130
     except curses.error:
         print('The terminal could not be initialized. Use a terminal with TERM=xterm-256color.', file=sys.stderr)
@@ -1444,4 +1446,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    runtime.run_main(main)

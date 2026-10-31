@@ -115,21 +115,21 @@ class TuiTests(unittest.TestCase):
             if not title.startswith('['):
                 self.assertIn(title, text)
 
-    def test_interrupt_during_handler_install_and_restore_does_not_raise(self):
+    def test_repeated_interrupts_during_worker_cleanup_do_not_raise(self):
         previous = signal.getsignal(signal.SIGINT)
         installed = []
         def register(number, handler):
             self.assertEqual(number, signal.SIGINT)
-            if not installed:
-                installed.append(handler)
-                handler(number, None)
-            else:
-                # Reproduce Ctrl+C arriving inside signal.signal() in finally.
-                installed[0](number, None)
-                self.assertIs(handler, previous)
+            installed.append(handler)
+            handler(number, None)
             return previous
+        def close():
+            for _ in range(3):
+                installed[0](signal.SIGINT, None)
+        self.app.cli_worker = SimpleNamespace(close=close)
         with patch('signal.signal', side_effect=register):
             self.assertEqual(self.app.run(), 130)
+        self.assertEqual(len(installed), 1, 'Do not restore the raising handler before shutdown')
         self.assertFalse(self.app.running)
 
     def test_keyboard_interrupt_during_curses_startup_is_clean(self):

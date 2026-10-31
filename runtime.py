@@ -1,7 +1,22 @@
 """Command routing shared by source and self-contained releases."""
 import os
 from pathlib import Path
+import signal
 import sys
+
+
+def run_main(main):
+    """Run a process entrypoint and protect interpreter cleanup from Ctrl+C."""
+    try:
+        result = main()
+    except KeyboardInterrupt:
+        result = 130
+    finally:
+        # sys.exit() still runs threading shutdown and atexit callbacks. A late
+        # terminal/bootloader signal must not raise inside that cleanup. This
+        # disposition belongs to this exiting process; it cannot affect the shell.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    sys.exit(result)
 
 
 def command(script, *args):
