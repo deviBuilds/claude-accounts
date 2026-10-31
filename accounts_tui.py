@@ -1395,26 +1395,8 @@ class App:
             # Ctrl+C must not interrupt worker shutdown or curses restoration.
             if self.cli_worker:
                 self.cli_worker.close()
-            if interrupted:
-                # Erase the alternate screen before endwin can save it in history.
-                try:
-                    self.screen.erase()
-                    self.screen.refresh()
-                except curses.error:
-                    pass
             signal.signal(signal.SIGINT, previous)
         return 130 if interrupted else 0
-
-
-def clear_terminal_after_interrupt():
-    if sys.stdout.isatty():
-        try:
-            # Run after curses restores the shell screen: clear the visible
-            # screen, then scrollback, and put the shell prompt at the top.
-            sys.stdout.write('\x1b[2J\x1b[3J\x1b[H')
-            sys.stdout.flush()
-        except OSError:
-            pass
 
 
 def main(argv=None):
@@ -1458,8 +1440,6 @@ def main(argv=None):
     except curses.error:
         print('The terminal could not be initialized. Use a terminal with TERM=xterm-256color.', file=sys.stderr)
         return 1
-    if result == 130:
-        clear_terminal_after_interrupt()
     return result
 
 

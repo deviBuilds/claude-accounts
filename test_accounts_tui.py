@@ -133,9 +133,8 @@ class TuiTests(unittest.TestCase):
         self.assertFalse(self.app.running)
 
     def test_keyboard_interrupt_during_curses_startup_is_clean(self):
-        with patch.object(sys.stdin, 'isatty', return_value=True), patch.object(sys.stdout, 'isatty', return_value=True), patch('curses.wrapper', side_effect=KeyboardInterrupt), patch.object(tui, 'clear_terminal_after_interrupt') as clear:
+        with patch.object(sys.stdin, 'isatty', return_value=True), patch.object(sys.stdout, 'isatty', return_value=True), patch('curses.wrapper', side_effect=KeyboardInterrupt):
             self.assertEqual(tui.main(['--demo']), 130)
-            clear.assert_called_once_with()
 
     def test_first_run_enters_default_profile_wizard_and_reports_missing_cli(self):
         self.app.state = {'first_run': True, 'cli_available': True,
@@ -616,6 +615,45 @@ class StatusTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def test_ctrl_c_uses_normal_quit_cleanup_without_clearing_history(self):
+        tails = []
+        for interrupt in (False, True):
+            master, slave = pty.openpty()
+            process = subprocess.Popen([sys.executable, str(Path(tui.__file__)), '--demo'],
+                                       stdin=slave, stdout=slave, stderr=slave,
+                                       start_new_session=True, env={**os.environ, 'TERM': 'xterm-256color'})
+            output = bytearray()
+            def drain_until(predicate):
+                deadline = time.monotonic()+5
+                while not predicate() and time.monotonic() < deadline:
+                    if select.select([master], [], [], .05)[0]:
+                        output.extend(os.read(master, 65536))
+            try:
+                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 110, 0, 0))
+                drain_until(lambda: b'Esc: back' in output)
+                self.assertIn(b'Esc: back', output)
+                if interrupt:
+                    process.send_signal(signal.SIGINT)
+                else:
+                    os.write(master, b'q')
+                drain_until(lambda: process.poll() is not None)
+                process.wait(timeout=1)
+                while select.select([master], [], [], .05)[0]:
+                    output.extend(os.read(master, 65536))
+                self.assertEqual(process.returncode, 130 if interrupt else 0)
+                self.assertNotIn(b'Traceback', output)
+                self.assertNotIn(b'\x1b[3J', output)
+                restored = output.rfind(b'\x1b[?1049l')
+                self.assertGreaterEqual(restored, 0)
+                tail = bytes(output[restored:])
+                self.assertNotIn(b'\x1b[2J', tail)
+                tails.append(tail)
+            finally:
+                if process.poll() is None:
+                    process.kill(); process.wait(timeout=5)
+                os.close(master); os.close(slave)
+        self.assertEqual(tails[0], tails[1])
+
     def test_real_terminal_navigation_resize_and_exit(self):
         master, slave = pty.openpty()
         initial = termios.tcgetattr(slave)
