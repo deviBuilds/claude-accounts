@@ -13,10 +13,12 @@ import binary_install as installer
 import build_release
 import runtime
 import accounts_tui as tui
+import codex_tui
 
 
 class BinaryInstallTests(unittest.TestCase):
     def setUp(self):
+        patch.object(installer.provider_app, 'choose', return_value='claude').start()
         self.options = patch.object(installer.setup_options, 'choose', return_value=['cli', 'desktop']).start()
         patch.object(installer.setup_options, 'load', return_value=['cli', 'desktop']).start()
         self.saved_options = patch.object(installer.setup_options, 'save').start()
@@ -31,6 +33,10 @@ class BinaryInstallTests(unittest.TestCase):
                              [sys.executable, '--rotation-helper', '--tick'])
             self.assertEqual(runtime.command(Path('/example/onboarding.py'), 'prepare', 'work'),
                              [sys.executable, '--onboarding-helper', 'prepare', 'work'])
+            self.assertEqual(runtime.command(Path('/example/codex_accounts.py'), '--status-json'),
+                             [sys.executable, '--codex-helper', '--status-json'])
+            self.assertEqual(runtime.command(Path('/example/codex_rotation.py'), '--tick'),
+                             [sys.executable, '--codex-rotation-helper', '--tick'])
 
     def test_install_missing_cli_and_skip_existing(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -105,6 +111,11 @@ class BinaryInstallTests(unittest.TestCase):
             self.assertEqual((credentials/'private').read_text(),'unchanged')
             helper = target.with_name('claude-desktop-sync')
             self.assertIn("'"+str(target)+"' --desktop-helper",helper.read_text())
+            for name, arguments in (('codex-accounts', '--provider codex'),
+                                    ('codex-rotate', '--codex-rotation-helper --run')):
+                launcher = target.with_name(name)
+                self.assertIn("'"+str(target)+"' "+arguments+' "$@"', launcher.read_text())
+                self.assertEqual(launcher.stat().st_mode & 0o777, 0o755)
             installer.install_binary(target,home)
             target.unlink()
             target.symlink_to(source)
@@ -143,6 +154,50 @@ class BinaryInstallTests(unittest.TestCase):
             self.options.return_value=None
             self.assertEqual(installer.main([]),0)
             for method in (cli,desktop,binary,self.saved_options):method.assert_not_called()
+
+    def test_codex_and_both_install_only_selected_components(self):
+        for provider in ('codex', 'both'):
+            for choice in ('cli', 'desktop', 'both'):
+                with self.subTest(provider=provider, components=choice), patch.object(sys, 'frozen', True, create=True), \
+                     patch.object(installer.os, 'geteuid', return_value=501), \
+                     patch.object(installer, 'install_cli') as claude_cli, \
+                     patch.object(installer, 'install_desktop') as claude_desktop, \
+                     patch.object(installer.codex_install, 'install_cli') as codex_cli, \
+                     patch.object(installer.codex_install, 'install_desktop') as codex_desktop, \
+                     patch.object(codex_tui, 'save_components') as save_codex, \
+                     patch.object(installer, 'install_binary', return_value=Path('/example/claude-accounts')):
+                    self.assertEqual(installer.main(['--no-launch', '--provider', provider, '--components', choice]), 0)
+                    self.assertEqual(claude_cli.call_count, int(provider == 'both' and choice in ('cli', 'both')))
+                    self.assertEqual(claude_desktop.call_count, int(provider == 'both' and choice in ('desktop', 'both')))
+                    self.assertEqual(codex_cli.call_count, int(choice in ('cli', 'both')))
+                    self.assertEqual(codex_desktop.call_count, int(choice in ('desktop', 'both')))
+                    save_codex.assert_called_once_with(['cli', 'desktop'] if choice == 'both' else [choice])
+
+    def test_unattended_existing_install_does_not_add_codex_dependencies(self):
+        with patch.object(sys, 'frozen', True, create=True), patch.object(installer.os, 'geteuid', return_value=501), \
+             patch.object(installer, 'install_cli'), patch.object(installer, 'install_desktop'), \
+             patch.object(installer.codex_install, 'install_cli') as cli, \
+             patch.object(installer.codex_install, 'install_desktop') as desktop, \
+             patch.object(codex_tui, 'save_components') as save, \
+             patch.object(installer, 'install_binary', return_value=Path('/example/claude-accounts')):
+            self.assertEqual(installer.main(['--no-launch']), 0)
+            for method in (cli, desktop, save):
+                method.assert_not_called()
+
+    def test_cancel_provider_or_codex_components_installs_nothing(self):
+        for provider in (None, 'codex'):
+            with self.subTest(provider=provider), patch.object(sys, 'frozen', True, create=True), \
+                 patch.object(installer.os, 'geteuid', return_value=501), \
+                 patch.object(sys.stdin, 'isatty', return_value=True), patch.object(sys.stdout, 'isatty', return_value=True), \
+                 patch.object(installer.provider_app, 'choose', return_value=provider), \
+                 patch.object(installer, 'install_cli') as cli, patch.object(installer, 'install_desktop') as desktop, \
+                 patch.object(installer.codex_install, 'install_cli') as codex_cli, \
+                 patch.object(installer.codex_install, 'install_desktop') as codex_desktop, \
+                 patch.object(installer, 'install_binary') as binary, patch.object(codex_tui, 'save_components') as save:
+                self.options.return_value = None
+                self.assertEqual(installer.main([]), 0)
+                for method in (cli, desktop, codex_cli, codex_desktop, binary, save):
+                    method.assert_not_called()
 
     def test_failed_dependency_stops_before_app_install_and_tui(self):
         with patch.object(sys,'frozen',True,create=True), patch.object(installer.os,'geteuid',return_value=501), \

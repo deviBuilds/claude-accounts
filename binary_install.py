@@ -15,6 +15,8 @@ import urllib.parse
 import urllib.request
 import zipfile
 import setup_options
+import provider_app
+import codex_install
 
 APP = Path('/Applications/Claude.app')
 CASK = 'https://formulae.brew.sh/api/cask/claude.json'
@@ -103,7 +105,7 @@ def install_binary(source, home):
     binaries.mkdir(parents=True, exist_ok=True)
     target = binaries/'claude-accounts'
     helper = binaries/'claude-desktop-sync'
-    for path in (target, helper, binaries/'claude-rotate'):
+    for path in (target, helper, binaries/'claude-rotate', binaries/'codex-accounts', binaries/'codex-rotate'):
         if path.is_symlink() or path.is_dir():
             raise RuntimeError(f'Refusing to replace a symlink or directory: {path}')
     with tempfile.TemporaryDirectory(prefix='.claude-accounts-install-', dir=binaries) as directory:
@@ -121,6 +123,11 @@ def install_binary(source, home):
         rotate.write_text('#!/bin/sh\nexec '+shlex.quote(str(target))+' --rotation-helper --run "$@"\n')
         rotate.chmod(0o755)
         rotate.replace(binaries/'claude-rotate')
+        for name, argument in (('codex-accounts', '--provider codex'), ('codex-rotate', '--codex-rotation-helper --run')):
+            launcher = staging/name
+            launcher.write_text('#!/bin/sh\nexec '+shlex.quote(str(target))+' '+argument+' "$@"\n')
+            launcher.chmod(0o755)
+            launcher.replace(binaries/name)
     import rotation
     if rotation.Rotation(home).update_schedule():
         print('Auto rotation: background checks updated to every 5 minutes.', flush=True)
@@ -130,6 +137,7 @@ def install_binary(source, home):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--components', choices=['cli', 'desktop', 'both'], help='select apps without the interactive checklist')
+    parser.add_argument('--provider', choices=['claude', 'codex', 'both'], help='choose the provider to install')
     parser.add_argument('--check', action='store_true', help='report dependencies without installing or opening anything')
     parser.add_argument('--no-launch', action='store_true', help='install dependencies and app without opening the TUI')
     args = parser.parse_args(argv)
@@ -137,11 +145,13 @@ def main(argv=None):
         parser.error('This installer supports macOS only.')
     if int(platform.mac_ver()[0].split('.')[0]) < 13:
         parser.error('macOS 13 or newer is required.')
-    print('CLAUDE ACCOUNTS — standalone installation', flush=True)
+    print('AI ACCOUNTS — standalone installation', flush=True)
     print('Python, Node.js and Homebrew are not required.', flush=True)
     if args.check:
         print('Claude Code: '+(shutil.which('claude') or 'not installed'))
         print('Claude Desktop: '+('already installed' if APP.is_dir() else 'not installed'))
+        print('Codex CLI: '+str(codex_install.detect_cli() or 'not installed'))
+        print('Codex Desktop: '+str(codex_install.detect_desktop() or 'not installed'))
         print('Choose CLI, Desktop, or both during interactive setup.')
         print(f'Account manager: {Path.home() / ".local/bin/claude-accounts"}')
         return 0
@@ -152,24 +162,45 @@ def main(argv=None):
     if os.geteuid() == 0:
         parser.error('Run as your normal user, not with sudo. Only the Desktop copy may request administrator access.')
     try:
-        components = setup_options.normalize(args.components) if args.components else (setup_options.load() if args.no_launch else setup_options.choose())
+        provider = args.provider or ('claude' if args.no_launch else provider_app.choose())
+        if provider is None:
+            print('Setup cancelled. Nothing installed.')
+            return 0
+        if provider == 'codex':
+            import codex_tui
+            if args.components:
+                components = setup_options.normalize(args.components)
+            elif args.no_launch:
+                components = codex_tui.load_components()
+            else:
+                components = setup_options.choose(selected=codex_tui.load_components(), provider='codex')
+        else:
+            components = setup_options.normalize(args.components) if args.components else (setup_options.load() if args.no_launch else
+                         setup_options.choose(provider='both') if provider == 'both' else setup_options.choose())
         if components is None:
             print('Setup cancelled. Nothing installed.')
             return 0
         with tempfile.TemporaryDirectory(prefix='claude-accounts-dependencies-') as directory:
-            if 'cli' in components:
+            if provider in ('claude', 'both') and 'cli' in components:
                 install_cli(Path(directory))
-            if 'desktop' in components:
+            if provider in ('claude', 'both') and 'desktop' in components:
                 install_desktop(Path(directory))
+            if provider in ('codex', 'both') and 'cli' in components:
+                codex_install.install_cli(Path(directory))
+            if provider in ('codex', 'both') and 'desktop' in components:
+                codex_install.install_desktop(Path(directory))
         target = install_binary(Path(sys.executable), Path.home())
-        setup_options.save(components)
+        if provider in ('claude', 'both'):
+            setup_options.save(components)
+        if provider in ('codex', 'both'):
+            import codex_tui
+            codex_tui.save_components(components)
         print(f'Installed: {target}', flush=True)
         if args.no_launch:
             return 0
         print('Opening account setup. Browser sign-in is completed by you.', flush=True)
         # Stay in this process: its bundled libraries and certificate store are alive.
-        import accounts_tui
-        return accounts_tui.main(['--onboard'])
+        return provider_app.main((['--provider', provider] if provider != 'both' else [])+['--onboard'])
     except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
         print(f'Installation stopped: {error}\nYou can rerun the installer after fixing this step.', file=sys.stderr)
         return 1

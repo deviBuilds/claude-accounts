@@ -64,7 +64,7 @@ def interrupted_shutdown():
         os.kill(os.getpid(), signal.SIGINT)
     print('THREAD_SHUTDOWN_FINISHED', flush=True)
 threading._register_atexit(interrupted_shutdown)
-sys.argv = [sys.argv[1], '--demo']
+sys.argv = [sys.argv[1], '--demo'] + (['--provider', 'claude'] if sys.argv[1].endswith('app_entry.py') else [])
 runpy.run_path(sys.argv[0], run_name='__main__')
 '''
         master, slave = pty.openpty()

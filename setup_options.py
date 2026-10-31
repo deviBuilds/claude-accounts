@@ -1,8 +1,9 @@
-"""Choose which Claude apps to install and onboard; installation != login."""
+"""Choose which provider apps to install and onboard; installation != login."""
 import curses
 import json
 from pathlib import Path
 import shutil
+import signal
 
 from desktop_profiles import atomic_json
 
@@ -32,17 +33,27 @@ def save(components, home=None):
     atomic_json(path, {'components': normalize(components)})
 
 
-def detected():
-    return {'cli': bool(shutil.which('claude')), 'desktop': Path('/Applications/Claude.app').is_dir()}
+def detected(provider='claude'):
+    if provider == 'codex':
+        import codex_install
+        return {'cli': bool(codex_install.detect_cli(include_bundled=False)),
+                'desktop': bool(codex_install.detect_desktop())}
+    claude = {'cli': bool(shutil.which('claude')), 'desktop': Path('/Applications/Claude.app').is_dir()}
+    if provider == 'both':
+        codex = detected('codex')
+        return {key: claude[key] and codex[key] for key in CHOICES}
+    return claude
 
 
 class Selector:
-    def __init__(self, screen, installed, selected):
+    def __init__(self, screen, installed, selected, provider='claude'):
         self.screen, self.installed = screen, installed
         self.selected = set(selected)
+        self.provider = provider
         self.cursor, self.notice = 0, ''
         self.finished, self.result = False, None
         screen.keypad(True)
+        screen.timeout(100)
         try:
             curses.curs_set(0)
             curses.set_escdelay(25)
@@ -64,15 +75,16 @@ class Selector:
     def draw(self):
         self.screen.erase()
         h,w=self.screen.getmaxyx()
-        self.put(1,3,'CLAUDE ACCOUNTS  /  SETUP',1,True)
+        brand = {'claude': 'Claude', 'codex': 'Codex', 'both': 'Claude + Codex'}[self.provider]
+        self.put(1,3,brand.upper()+' ACCOUNTS  /  SETUP',1,True)
         if h<20 or w<60:
             self.put(3,3,'Enlarge terminal to 60 columns × 20 rows.',5)
             self.put(5,3,'Esc: cancel',1)
         else:
             self.put(3,3,'What would you like to use?',1,True)
             self.put(4,3,'Select one or both. Detected apps will be reused.')
-            for i,(key,title,detail) in enumerate((('cli','Claude Code CLI','Use Claude in your terminal.'),
-                                                  ('desktop','Claude Desktop','Use the desktop app and saved account switching.'))):
+            for i,(key,title,detail) in enumerate((('cli',brand+' CLI','Use '+brand+' in your terminal.'),
+                                                  ('desktop',brand+' Desktop','Use the desktop app and saved account switching.'))):
                 y=7+i*4
                 checked='[x]' if key in self.selected else '[ ]'
                 self.put(y,3,('› ' if self.cursor==i else '  ')+checked+' '+title,4 if self.cursor==i else 2,True)
@@ -104,9 +116,25 @@ class Selector:
         return self.result
 
 
-def choose(installed=None, selected=None):
+def choose(installed=None, selected=None, provider='claude'):
+    selector = None
+    cancelled = False
+    def interrupt(*_):
+        nonlocal cancelled
+        cancelled = True
+        if selector:
+            selector.finished = True
+    previous_interrupt = signal.signal(signal.SIGINT, interrupt)
+    def run(screen):
+        nonlocal selector
+        selector = Selector(screen, detected(provider) if installed is None else installed,
+                            load() if selected is None else selected, provider)
+        if cancelled:
+            return None
+        return selector.run()
     try:
-        return curses.wrapper(lambda screen: Selector(screen, detected() if installed is None else installed,
-                                                       load() if selected is None else selected).run())
+        return curses.wrapper(run)
     except KeyboardInterrupt:
         return None
+    finally:
+        signal.signal(signal.SIGINT, previous_interrupt)

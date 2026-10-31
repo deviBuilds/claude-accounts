@@ -76,7 +76,26 @@ class FirstInstallTests(unittest.TestCase):
             self.assertFalse((home/'.zshrc').exists())
             self.assertFalse((home/'.claude-desktop-profiles').exists())
             self.assertEqual(sorted(p.name for p in (home/'.local/lib/claude-accounts').iterdir() if p.is_file()), sorted(install.FILES))
-            self.assertIn(str(home/'.local/lib/claude-accounts/accounts_tui.py'), launcher.read_text())
+            modules = home/'.local/lib/claude-accounts'
+            self.assertIn(str(modules/'provider_app.py'), launcher.read_text())
+            for name in ('codex_accounts.py', 'codex_rpc.py', 'codex_install.py', 'codex_desktop.py',
+                         'codex_history.py', 'codex_rotation.py', 'codex_tui.py'):
+                self.assertTrue((modules/name).is_file(), name)
+            for command, module, option in (('codex-accounts', 'provider_app.py', '--provider codex'),
+                                             ('codex-rotate', 'codex_rotation.py', '--run')):
+                codex_launcher = launcher.with_name(command)
+                self.assertIn(str(modules/module), codex_launcher.read_text())
+                self.assertIn(option+' "$@"', codex_launcher.read_text())
+                self.assertEqual(codex_launcher.stat().st_mode & 0o777, 0o755)
+                # The rotate launcher forwards all arguments to Codex after
+                # --run; inspect manager help directly without enabling it.
+                help_command = ([str(codex_launcher), '--help'] if command == 'codex-accounts' else
+                                [sys.executable, str(modules/module), '--help'])
+                help_text = subprocess.run(help_command, capture_output=True,
+                                           text=True, check=True).stdout
+                self.assertIn('--cli' if command == 'codex-accounts' else '--enable', help_text)
+            for name in ('.codex', '.codex-rotate', '.codex-accounts'):
+                self.assertFalse((home/name).exists(), name)
 
     def test_cli_command_forwards_arguments_and_isolates_profile_environment(self):
         with tempfile.TemporaryDirectory() as temp:

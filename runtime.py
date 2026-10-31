@@ -21,7 +21,9 @@ def run_main(main):
 
 def command(script, *args):
     if getattr(sys, 'frozen', False):
-        mode = {'desktop-sync.py': '--desktop-helper', 'onboarding.py': '--onboarding-helper', 'rotation.py': '--rotation-helper'}[Path(script).name]
+        mode = {'desktop-sync.py': '--desktop-helper', 'onboarding.py': '--onboarding-helper',
+                'rotation.py': '--rotation-helper', 'codex_accounts.py': '--codex-helper',
+                'codex_rotation.py': '--codex-rotation-helper'}[Path(script).name]
         return [sys.executable, mode, *args]
     return [sys.executable, str(script), *args]
 

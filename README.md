@@ -1,7 +1,9 @@
-# Claude Accounts (macOS)
+# Claude + Codex Accounts (macOS)
 
-A local terminal interface for managing multiple Claude Code subscription logins
-and saved Claude Desktop profiles. Account identities are discovered and verified;
+A local terminal interface for managing multiple Claude and Codex logins,
+Desktop profiles, shared local history, and automatic CLI account rotation.
+Choose the provider when opening `claude-accounts`, or open Codex directly with
+`codex-accounts`. Account identities are discovered and verified;
 no developer account, email, token, or Desktop snapshot ships with this software.
 
 ## One-command install (no Python setup)
@@ -23,11 +25,12 @@ executable of the tested Python implementation, not a Rust rewrite.
 
 The installer:
 
-1. Checks your Mac and verifies the executable's checksum. Then shows a checklist:
+1. Checks your Mac and verifies the executable's checksum. Choose Claude or Codex,
+   then use the checklist:
    **↑/↓** to move, **Space** to select CLI, Desktop, or both, **Enter** to continue.
    Installed apps show **✓ Detected** and are reused; installation detection does
    not imply you are signed in. You can deselect a detected app.
-2. Reuses existing Claude Code and Desktop installations.
+2. Reuses existing CLI and Desktop installations for the selected provider.
 3. If selected, installs a missing CLI with [Anthropic's native installer](https://code.claude.com/docs/en/setup).
 4. If selected, downloads a missing Desktop directly from Anthropic, using the URL and checksum
    in [Homebrew's public cask metadata](https://formulae.brew.sh/cask/claude). It
@@ -36,6 +39,12 @@ The installer:
    administrator password for that copy.
 5. Saves your choices and installs `~/.local/bin/claude-accounts` and the compatible `claude-desktop-sync`
    launcher, then opens setup for a new user. Existing users see their accounts.
+
+For Codex, missing dependencies use OpenAI's official native CLI installer and
+Desktop DMG. The Desktop signature and bundle identifier are verified. Renamed
+Codex Desktop installations, including a `ChatGPT.app` with the Codex bundle ID,
+are detected. The installer also adds `codex-accounts` and `codex-rotate` launchers.
+It does not restart an already installed Desktop app.
 
 Only selected apps are installed and onboarded. CLI-only setup ends after CLI
 verification. Desktop-only setup checks and saves the encrypted Desktop login
@@ -53,7 +62,9 @@ curl -fsSL https://raw.githubusercontent.com/deviBuilds/claude-accounts/main/ins
 
 To change your app choices later, run `claude-accounts --install` again.
 For scripted installation, append `--components=cli`, `--components=desktop`, or
-`--components=both` after `bash -s --`. With `--no-launch`, omitted choices reuse
+`--components=both` and `--provider=claude`, `--provider=codex`, or `--provider=both`
+after `bash -s --`. With `--no-launch`, an omitted provider remains Claude for
+backward compatibility; omitted component choices reuse
 your saved selection (both on a first install).
 
 For installation without opening the TUI, use `bash -s -- --no-launch` at the end
@@ -70,11 +81,72 @@ and tested separately on Intel; it is not included in this release.
 ### Source installation
 
 Developers can still unzip the source bundle and run `python3 install.py`. This path
-requires Python 3.10+ and separately installed Claude Code and Desktop. The source
+requires Python 3.11+ and separately installed provider applications. The source
 installer writes modules to `~/.local/lib/claude-accounts` and shell launchers to
 `~/.local/bin`.
 
-## First account
+## Codex accounts
+
+Select **Codex** in the provider screen, or run `codex-accounts`. Select CLI,
+Desktop, or both with Space. Existing reusable native file logins are detected
+as profile `a`. Add another label, then sign in once using Codex's official browser
+flow. The same canonical login is reused for that profile's CLI and managed Desktop.
+
+The Codex section includes account creation, background verification/refresh,
+usage percentages and reset times, changing a login, saving an existing Desktop
+login, soft removal and restoration, history import, interrupted-switch recovery,
+and automatic rotation under Tools. API-key accounts can open clients, but cannot
+participate in subscription-quota rotation.
+
+### One managed history home
+
+All managed CLI and Desktop launches use `~/.codex-rotate`. Sessions, archived
+sessions, SQLite state, local prompt history, and thread-name indexes stay in
+that one directory when accounts change. Initial setup imports native local
+history from `~/.codex` without modifying its source. Tools can import additional
+local history; existing divergent managed threads are retained and conflicts are
+reported instead of overwriting them. Cloud-only conversations, projects and
+entitlements stay associated with their original OpenAI accounts.
+
+Profile authentication is kept in `~/.codex-accounts` or its original native
+file store. The runtime links to one canonical `auth.json` and `auth.lock`, so
+native token renewal updates the same credential rather than creating competing
+refresh-token copies. This integration requires Codex CLI and the Desktop bundled
+core **0.166.0 or newer**. Older installed clients are reported for update.
+
+Managed Desktop uses its own Electron data directory. Switching restarts that
+managed instance while retaining its history home. Other Desktop instances and
+ordinary CLI processes are not terminated. The current native Desktop login can
+be saved for reuse when it uses supported file storage. Native Keychain, `auto`,
+and externally managed logins are detected, but require a separate managed sign-in;
+the manager does not export their refresh tokens or change their storage policy.
+
+### Codex rotation lifecycle
+
+Select two distinct verified ChatGPT logins in **Tools → Auto rotation**. The
+LaunchAgent checks every five minutes, uses official Codex account and rate-limit
+RPCs, and refreshes expiring managed logins without a model prompt. Transient
+quota-check errors keep the current account and retry later.
+
+Run `codex-rotate` or `codex-rotate exec ...` to use the selected account.
+`codex-accounts --cli work` opens a specific profile in the same history home.
+Use native Codex resume commands to continue an existing thread.
+
+**Codex caches authentication in running processes.** A file change does not
+switch a running CLI/app-server after a reply. Rotation therefore queues a new
+account while managed clients are running and applies it when they close. A
+persistent integration such as T3Code must restart its Codex process and resume
+the thread to adopt the next account. Merely pointing a permanently running
+Codex process at the shared home cannot provide Claude's next-request switching.
+No HTTP inference proxy is used, and in-flight turns are never killed or replayed.
+
+The [official authentication documentation](https://learn.chatgpt.com/docs/auth),
+[app-server interface](https://learn.chatgpt.com/docs/app-server), and isolated
+tests against installed Codex 0.166 underpin these behaviors. This is functional
+account-management support, not a claim that every native Codex lifecycle is
+identical to Claude's.
+
+## First Claude account
 
 1. The standalone installer opens setup automatically for a new user. When opening
    the manager yourself, choose **Set up your first account**. The default CLI

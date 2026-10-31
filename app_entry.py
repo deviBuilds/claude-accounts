@@ -26,8 +26,14 @@ def main():
     if sys.argv[1:2] == ['--rotation-helper']:
         import rotation
         return rotation.main(sys.argv[2:])
-    import accounts_tui
-    return accounts_tui.main()
+    if sys.argv[1:2] == ['--codex-helper']:
+        import codex_accounts
+        return codex_accounts.main(sys.argv[2:])
+    if sys.argv[1:2] == ['--codex-rotation-helper']:
+        import codex_rotation
+        return codex_rotation.main(sys.argv[2:])
+    import provider_app
+    return provider_app.main()
 
 
 if __name__ == '__main__':

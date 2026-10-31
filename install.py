@@ -7,7 +7,9 @@ import shutil
 import sys
 
 FILES = ('rotation.py', 'profile_management.py', 'accounts_tui.py', 'account_status.py', 'account_usage.py', 'cli_refresh.py',
-         'desktop-sync.py', 'desktop_profiles.py', 'onboarding.py', 'runtime.py', 'setup_options.py')
+         'desktop-sync.py', 'desktop_profiles.py', 'onboarding.py', 'runtime.py', 'setup_options.py',
+         'provider_app.py', 'codex_accounts.py', 'codex_rpc.py', 'codex_install.py', 'codex_desktop.py',
+         'codex_history.py', 'codex_rotation.py', 'codex_tui.py')
 
 
 def install(source, home, python):
@@ -22,12 +24,14 @@ def install(source, home, python):
             shutil.copyfile(src, temporary)
             os.chmod(temporary, 0o644)
             temporary.replace(target)
-    for command, module in [('claude-accounts', 'accounts_tui.py'), ('claude-desktop-sync', 'desktop-sync.py'), ('claude-rotate', 'rotation.py')]:
+    for command, module in [('claude-accounts', 'provider_app.py'), ('codex-accounts', 'provider_app.py'),
+                            ('claude-desktop-sync', 'desktop-sync.py'), ('claude-rotate', 'rotation.py'), ('codex-rotate', 'codex_rotation.py')]:
         launcher = binaries / command
         # Never replace someone else's symlink target.
         if launcher.is_symlink():
             raise RuntimeError(f'Refusing to replace a symlink: {launcher}')
-        launcher.write_text('#!/bin/sh\nexec '+shlex.quote(str(python))+' '+shlex.quote(str(destination/module))+(' --run' if command == 'claude-rotate' else '')+' "$@"\n')
+        options = ' --run' if command in ('claude-rotate', 'codex-rotate') else ' --provider codex' if command == 'codex-accounts' else ''
+        launcher.write_text('#!/bin/sh\nexec '+shlex.quote(str(python))+' '+shlex.quote(str(destination/module))+options+' "$@"\n')
         launcher.chmod(0o755)
     return binaries/'claude-accounts'
 
@@ -35,8 +39,8 @@ def install(source, home, python):
 def main():
     if sys.platform != 'darwin':
         sys.exit('This release supports macOS only (Desktop and Keychain integration).')
-    if sys.version_info < (3, 10):
-        sys.exit('Python 3.10 or newer is required.')
+    if sys.version_info < (3, 11):
+        sys.exit('Python 3.11 or newer is required for source installation.')
     command = install(Path(__file__).resolve().parent, Path.home(), Path(sys.executable).resolve())
     print(f'Installed. Run: {command}')
     if not shutil.which('claude'):

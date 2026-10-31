@@ -493,6 +493,7 @@ class App:
             return rows + [('add', '+ Add new account', 'Set up the Claude apps you selected'),
                            ('refresh', 'Refresh accounts', 'Check current logins'),
                            ('tools', 'Tools', 'Sync history or recover an interrupted switch'),
+                           ('providers', 'Change provider', 'Manage Claude or Codex accounts'),
                            ('quit', 'Quit', '')]
         if self.page == 'rotation':
             self.prune_rotation_selection()
@@ -728,6 +729,9 @@ class App:
             self.goto('home')
             self.refresh()
         elif action == 'quit':
+            self.running = False
+        elif action == 'providers':
+            self.exit_code = 20
             self.running = False
         elif action == 'refresh':
             self.refresh()
@@ -1398,7 +1402,7 @@ class App:
             closing = True
             if self.cli_worker:
                 self.cli_worker.close()
-        return 130 if interrupted else 0
+        return 130 if interrupted else getattr(self, 'exit_code', 0)
 
 
 def main(argv=None):
