@@ -239,7 +239,8 @@ snapshots, usage caches, credentials and build environment files are excluded.
 Open **Tools → Auto rotation** in the TUI. Select at least two distinct signed-in CLI
 accounts with **Space**, then choose **Apply selection and enable rotation**.
 Rotation is opt-in. It installs a per-user macOS LaunchAgent, runs immediately,
-and checks selected accounts every 60 seconds while you are logged in. Sleep,
+and checks selected accounts every 5 minutes while you are logged in. Upgrades
+also update the schedule of an already enabled rotation service. Sleep,
 slow network calls, and server `Retry-After` responses can delay checks.
 
 Use `claude-rotate` in Terminal. For T3Code, configure a Claude provider with:

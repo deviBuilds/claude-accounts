@@ -121,6 +121,9 @@ def install_binary(source, home):
         rotate.write_text('#!/bin/sh\nexec '+shlex.quote(str(target))+' --rotation-helper --run "$@"\n')
         rotate.chmod(0o755)
         rotate.replace(binaries/'claude-rotate')
+    import rotation
+    if rotation.Rotation(home).update_schedule():
+        print('Auto rotation: background checks updated to every 5 minutes.', flush=True)
     return target
 
 

@@ -642,7 +642,7 @@ class App:
             self.confirm('rotation:enable', 'Enable automatic account rotation?',
                          ['Selected profiles: ' + ', '.join(self.rotation_selected),
                           'Conversations in ~/.claude-rotate are shared across these accounts.',
-                          'A LaunchAgent checks every minute, refreshes expired logins, and changes accounts when a reported limit is exhausted.',
+                          'A LaunchAgent checks every 5 minutes, refreshes expired logins, and changes accounts when a reported limit is exhausted.',
                           'Existing requests are not restarted or replayed. A new request can use the next account.',
                           'Refresh tokens remain in original profiles. Select at least two distinct signed-in accounts.'])
             return
@@ -656,7 +656,7 @@ class App:
             self.message('Auto rotation / T3Code', [
                 'T3Code: Binary path = claude; CLAUDE_CONFIG_DIR = ' + str(Path.home()/'.claude-rotate'),
                 'Terminal: use claude-rotate. Do not use /login or /logout inside the shared profile.',
-                'Checks run every 60 seconds, subject to server backoff. Rotation keeps the active account until a reported limit is exhausted or renewal fails.',
+                'Checks run every 5 minutes, subject to server backoff. Rotation keeps the active account until a reported limit is exhausted or renewal fails.',
                 'Any reported model limit conservatively makes an account ineligible.',
                 'The tested CLI reloads shared access tokens on its next API request. In-flight requests are not killed or replayed.',
                 'A turn already waiting for quota may need Stop then a new message.',
@@ -1027,7 +1027,7 @@ class App:
             self.fill(line, 2, width, 7)
         health, role = self.rotation_health(status)
         x = self.badge(5, 4, health, role, width+2)
-        self.put(5, x, 'Checks every 60s', self.color(13), width-x)
+        self.put(5, x, f'Checks every {rotation.INTERVAL//60} min', self.color(13), width-x)
         active = status.get('active')
         account = next((a for a in self.state.get('accounts', []) if a['label'] == active), {})
         name = account.get('cli_email') or account.get('email') or active

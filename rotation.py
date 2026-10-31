@@ -1,4 +1,4 @@
-"""One-minute account rotation. Shared access tokens; canonical refresh tokens stay put."""
+"""Five-minute account rotation. Shared access tokens; canonical refresh tokens stay put."""
 import argparse
 import contextlib
 import fcntl
@@ -20,7 +20,7 @@ import cli_refresh
 import desktop_profiles as dp
 import runtime
 
-INTERVAL = 60
+INTERVAL = 300
 AGENT = 'ai.claude-accounts.rotation'
 MARKER = 'claude-accounts-rotation-v1'
 
@@ -125,7 +125,7 @@ class Rotation:
             return {'enabled': False, 'accounts': [], 'stale': True, 'detail': 'Rotation state cannot be read. Repair the rotation configuration before enabling.'}
         return {**result, 'enabled': config['enabled'], 'accounts': config['accounts'],
                 'shared_dir': str(self.shared), 'poll_seconds': INTERVAL,
-                'stale': time.time()-result.get('checked_at', 0) > 180}
+                'stale': time.time()-result.get('checked_at', 0) > 3*INTERVAL}
 
     def prepare(self):
         if self.shared.exists():
@@ -250,6 +250,36 @@ class Rotation:
         subprocess.run(['launchctl', 'bootout', f'gui/{os.getuid()}/{AGENT}'], capture_output=True)
         self.agent_path().unlink(missing_ok=True)
 
+    def update_schedule(self):
+        """Migrate an enabled service on upgrade without re-enrolling accounts."""
+        path = self.agent_path()
+        if not path.exists() or not self.config().get('enabled'):
+            return False
+        with self.locked():
+            if not path.exists() or not self.config().get('enabled'):
+                return False
+            safe_file(path)
+            original = path.read_bytes()
+            spec = plistlib.loads(original)
+            if spec.get('Label') != AGENT:
+                raise RuntimeError('Unexpected rotation service label; schedule was not changed.')
+            if spec.get('StartInterval') == INTERVAL:
+                return False
+            spec['StartInterval'] = INTERVAL
+            domain = f'gui/{os.getuid()}'
+            subprocess.run(['launchctl', 'bootout', domain+'/'+AGENT], capture_output=True)
+            try:
+                path.write_bytes(plistlib.dumps(spec))
+                path.chmod(0o600)
+                result = subprocess.run(['launchctl', 'bootstrap', domain, str(path)], capture_output=True)
+                if result.returncode:
+                    raise RuntimeError('Could not reload the rotation schedule. Retry installation or re-enable rotation.')
+            except (OSError, RuntimeError):
+                path.write_bytes(original)
+                subprocess.run(['launchctl', 'bootstrap', domain, str(path)], capture_output=True)
+                raise
+            return True
+
     def launch(self, args):
         if args and (args[0] in ('login', 'logout', 'setup-token') or (args[0] == 'auth' and args[1:2] != ['status'])):
             raise RuntimeError('Sign in using an ordinary account profile, then select it in the rotation TUI.')
@@ -303,7 +333,7 @@ def main(argv=None):
         options = parser.parse_args(args)
         if options.enable:
             rotation.enable(options.enable)
-            print('Rotation enabled. Background checks run every 60 seconds. Use claude-rotate, or set T3Code CLAUDE_CONFIG_DIR to ~/.claude-rotate.')
+            print('Rotation enabled. Background checks run every 5 minutes. Use claude-rotate, or set T3Code CLAUDE_CONFIG_DIR to ~/.claude-rotate.')
         elif options.disable:
             rotation.disable()
             print('Rotation disabled. Shared sessions and the last access token are retained. Existing CLI processes were not stopped.')

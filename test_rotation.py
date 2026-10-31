@@ -154,7 +154,7 @@ class RotationTests(unittest.TestCase):
         with patch('rotation.subprocess.run', side_effect=[Mock(returncode=44),Mock(returncode=0),Mock(returncode=0)]):
             self.rotation.enable(['a','b'])
         spec=rotation.plistlib.loads(self.rotation.agent_path().read_bytes())
-        self.assertEqual(spec['StartInterval'],60)
+        self.assertEqual(spec['StartInterval'],300)
         self.assertTrue(spec['RunAtLoad'])
         self.assertEqual(spec['ProgramArguments'][-1],'--tick')
         with patch('rotation.subprocess.run', side_effect=[Mock(returncode=44),Mock(returncode=0),Mock(returncode=1)]):
@@ -189,16 +189,47 @@ class RotationTests(unittest.TestCase):
         (self.rotation.control/'status.json').write_text('{')
         self.assertFalse(self.rotation.status()['enabled'])
 
-    def test_one_minute_cache_and_backoff(self):
+    def test_five_minute_cache_and_backoff(self):
         fetch=Mock(return_value=[{'percent':10,'key':'session'}])
-        for now in (100,120,161):
-            account_usage.load(self.home,'test',{'accessToken':'fake'},now=now,fetcher=fetch,ttl=60)
+        for now in (100,160,399,400):
+            account_usage.load(self.home,'test',{'accessToken':'fake'},now=now,fetcher=fetch,ttl=rotation.INTERVAL)
         self.assertEqual(fetch.call_count,2)
         from urllib.error import HTTPError
         fetch.side_effect=HTTPError('https://example.test',429,'limited',{'Retry-After':'600'},None)
-        account_usage.load(self.home,'test',{'accessToken':'fake'},now=222,fetcher=fetch,ttl=60)
-        account_usage.load(self.home,'test',{'accessToken':'fake'},now=300,fetcher=fetch,ttl=60)
+        account_usage.load(self.home,'test',{'accessToken':'fake'},now=700,fetcher=fetch,ttl=rotation.INTERVAL)
+        account_usage.load(self.home,'test',{'accessToken':'fake'},now=1000,fetcher=fetch,ttl=rotation.INTERVAL)
         self.assertEqual(fetch.call_count,3)
+
+    def test_status_stays_fresh_between_five_minute_polls(self):
+        self.enable()
+        with patch('rotation.time.time', return_value=1000):
+            self.rotation.tick()
+        for now, stale in ((1299, False), (1301, False), (1901, True)):
+            with patch('rotation.time.time', return_value=now):
+                self.assertEqual(self.rotation.status()['stale'], stale)
+
+    def test_upgrade_reschedules_without_changing_accounts_or_credentials(self):
+        self.enable(); self.rotation.tick()
+        path = self.rotation.agent_path()
+        path.parent.mkdir(parents=True)
+        original = {'Label': rotation.AGENT, 'StartInterval': 60, 'RunAtLoad': True,
+                    'ProgramArguments': ['/example/claude-accounts', '--rotation-helper', '--tick']}
+        path.write_bytes(rotation.plistlib.dumps(original))
+        config = (self.rotation.control/'config.json').read_bytes()
+        credential = (self.rotation.shared/'.credentials.json').read_bytes()
+        with patch('rotation.subprocess.run', return_value=Mock(returncode=0)) as run:
+            self.assertTrue(self.rotation.update_schedule())
+            self.assertEqual(run.call_count, 2)
+            self.assertFalse(self.rotation.update_schedule())
+            self.assertEqual(run.call_count, 2)
+        self.assertEqual(rotation.plistlib.loads(path.read_bytes()), {**original, 'StartInterval': 300})
+        self.assertEqual((self.rotation.control/'config.json').read_bytes(), config)
+        self.assertEqual((self.rotation.shared/'.credentials.json').read_bytes(), credential)
+        path.write_bytes(rotation.plistlib.dumps(original))
+        with patch('rotation.subprocess.run', side_effect=[Mock(returncode=0), Mock(returncode=1), Mock(returncode=0)]):
+            with self.assertRaisesRegex(RuntimeError, 'reload'):
+                self.rotation.update_schedule()
+        self.assertEqual(rotation.plistlib.loads(path.read_bytes()), original)
 
 
 if __name__ == '__main__':
