@@ -48,7 +48,7 @@ class TuiTests(unittest.TestCase):
         self.assertEqual(self.app.page, 'rotation')
         self.app.cursor = 0
         self.app.key(ord(' '))
-        self.assertEqual(self.app.rotation_selected, ['a'])
+        self.assertEqual(self.app.rotation_selected, ['b'])
         self.app.key(ord(' '))
         self.assertEqual(self.app.rotation_selected, [])
         self.app.start('rotation:enable')
@@ -56,6 +56,27 @@ class TuiTests(unittest.TestCase):
         self.app.modal = None
         self.app.draw()
         self.assertTrue(any('Space: toggle' in line for line in self.screen.text))
+
+    def test_rotation_picker_excludes_invalid_cli_sessions_and_prunes_selection(self):
+        states = ['ready', 'missing', 'expired', 'unverified', 'refreshing',
+                  'refresh_failed', 'sign_in_required', 'not_selected']
+        self.app.state['accounts'] = [
+            {'label': state, 'cli_state': state, 'email': state+'@example.test', 'desktop_saved': True}
+            for state in states]
+        self.app.state['accounts'].append({'label': 'just_expired', 'cli_state': 'ready', 'expires_at': time.time()-1})
+        self.app.page = 'rotation'
+        self.app.rotation_selected = states + ['just_expired', 'removed']
+        picks = [row[0] for row in self.app.items() if row[0].startswith('rotate_pick:')]
+        self.assertEqual(picks, ['rotate_pick:ready'])
+        self.assertEqual(self.app.rotation_selected, ['ready'])
+        self.app.dispatch('rotate_pick:missing')
+        self.assertEqual(self.app.rotation_selected, ['ready'])
+        self.app.state['accounts'][0]['cli_state'] = 'expired'
+        self.assertFalse(any(row[0].startswith('rotate_pick:') for row in self.app.items()))
+        self.assertEqual(self.app.rotation_selected, [])
+        self.app.state['accounts'][0]['cli_state'] = 'ready'
+        self.assertEqual(self.app.items()[0][0], 'rotate_pick:ready')
+        self.assertEqual(self.app.rotation_selected, [])
 
     def test_first_run_enters_default_profile_wizard_and_reports_missing_cli(self):
         self.app.state = {'first_run': True, 'cli_available': True,

@@ -450,6 +450,16 @@ class App:
         else:
             self.start(action)
 
+    def rotation_accounts(self):
+        now = time.time()
+        return [row for row in self.state.get('accounts', [])
+                if row.get('cli_state') == 'ready'
+                and (not isinstance(row.get('expires_at'), (int, float)) or row['expires_at'] > now)]
+
+    def prune_rotation_selection(self):
+        eligible = {row['label'] for row in self.rotation_accounts()}
+        self.rotation_selected = [label for label in getattr(self, 'rotation_selected', []) if label in eligible]
+
     def items(self):
         if self.page == 'home':
             rows = []
@@ -469,10 +479,11 @@ class App:
                            ('tools', 'Tools', 'Sync history or recover an interrupted switch'),
                            ('quit', 'Quit', '')]
         if self.page == 'rotation':
-            selected = getattr(self, 'rotation_selected', [])
+            self.prune_rotation_selection()
+            selected = self.rotation_selected
             rows = [('rotate_pick:' + a['label'], ('[x] ' if a['label'] in selected else '[ ] ') + a['label'] + '  ' + str(a.get('cli_email') or a.get('email') or 'Sign-in needed'),
                      'Space: toggle participation. Identities are verified when enabling.')
-                    for a in self.state.get('accounts', []) if a.get('cli_state') != 'not_selected']
+                    for a in self.rotation_accounts()]
             return rows + [('rotate_enable', 'Apply selection and enable rotation', 'Start a LaunchAgent with 60-second checks'),
                            ('rotate_disable', 'Disable rotation', 'Stop checks; retain shared sessions and existing processes'),
                            ('rotate_check', 'Check now', 'Refresh account health and rotation status'),
@@ -588,16 +599,21 @@ class App:
         if action == 'rotation':
             status = rotation.Rotation().status() if not self.demo else {'accounts': []}
             self.rotation_selected = [a['label'] for a in status['accounts']]
+            self.prune_rotation_selection()
             self.goto('rotation')
             return
         if action.startswith('rotate_pick:'):
             label = action.split(':', 1)[1]
+            self.prune_rotation_selection()
+            if label not in {row['label'] for row in self.rotation_accounts()}:
+                return
             if label in self.rotation_selected:
                 self.rotation_selected.remove(label)
             else:
                 self.rotation_selected.append(label)
             return
         if action == 'rotate_enable':
+            self.prune_rotation_selection()
             self.confirm('rotation:enable', 'Enable automatic account rotation?',
                          ['Selected profiles: ' + ', '.join(self.rotation_selected),
                           'Conversations in ~/.claude-rotate are shared across these accounts.',
@@ -748,6 +764,7 @@ class App:
             mode = action.split(':', 1)[1]
             args = ['--' + mode]
             if mode == 'enable':
+                self.prune_rotation_selection()
                 if len(self.rotation_selected) < 2:
                     self.message('Select accounts', ['Select at least two signed-in CLI profiles using Space.'])
                     return
@@ -854,6 +871,7 @@ class App:
             return 'Auto rotation / CLI', [
                 ('Enabled' if status['enabled'] else 'Disabled') + ' | Active: ' + str(status.get('active') or 'none') + ' | Poll: 60 seconds',
                 ('Monitor has not checked recently. Use Check now; re-enable if needed.' if status.get('stale') and status['enabled'] else status.get('detail', 'Choose accounts with Space, then enable.')),
+                'Only verified, valid CLI logins are listed. Sign in or refresh missing accounts from the main menu.',
                 'Shared config and sessions: ~/.claude-rotate'] + profiles
         if self.page == 'home':
             return 'Choose an account', ['One selection at a time. Press Enter to open it.']
