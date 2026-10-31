@@ -309,6 +309,8 @@ class Profiles:
     def verified_label(self, name):
         if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,31}', name):
             raise RuntimeError('Account labels must use lowercase letters, digits, underscores or hyphens.')
+        if name in self.index().get('removedProfiles', {}):
+            raise RuntimeError('This profile was removed. Restore it from Tools first.')
         config = None if name == 'a' else self.home / ('.claude-acct-' + name)
         if config is not None and not config.is_dir():
             raise RuntimeError(f'No CLI profile {name!r} exists to verify this account.')
@@ -409,15 +411,17 @@ class Profiles:
                 if not file.exists() or source.stat().st_mtime_ns > file.stat().st_mtime_ns:
                     shutil.copy2(source, file)
 
-    def switch(self, name, login=False, dry=False, login_identity=None):
+    def switch(self, name, login=False, dry=False, login_identity=None, replace_desktop=False):
         self.check()
         if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,31}', name):
             raise RuntimeError('Invalid account label.')
         index = self.index()
+        if name in index.get('removedProfiles', {}):
+            raise RuntimeError('This profile was removed. Restore it from Tools first.')
         selected = index['profiles'].get(name)
         if login:
             expected = self.verified_label(name) if login_identity is None else login_identity
-            if selected:
+            if selected and not replace_desktop:
                 raise RuntimeError(f'{name} is already saved; use --switch {name}.')
         else:
             if not selected:
@@ -431,6 +435,8 @@ class Profiles:
             print(f'Desktop is already using {expected.get("email") or name}.')
             return
         outgoing = {label: p for label, p in index['profiles'].items() if current and p['account'] == current}
+        outgoing.update({label: entry['profile'] for label, entry in index.get('removedProfiles', {}).items()
+                         if current and (entry.get('profile') or {}).get('account') == current})
         if current and not outgoing:
             from account_status import discover
             for candidate in discover(self.home, index):
@@ -470,11 +476,16 @@ class Profiles:
             snapshot = self.snapshot(outgoing_meta)
             updated = json.loads(json.dumps(index))
             for label, metadata in outgoing.items():
-                updated['profiles'][label] = {**metadata, 'snapshot': snapshot}
+                if label in updated.get('removedProfiles', {}):
+                    updated['removedProfiles'][label]['profile'] = {**metadata, 'snapshot': snapshot}
+                else:
+                    updated['profiles'][label] = {**metadata, 'snapshot': snapshot}
             stage = self.store / ('stage-' + uuid.uuid4().hex)
             if login:
                 stage.mkdir(mode=0o700)
                 updated['pendingLogin'] = {'label': name, **expected}
+                if replace_desktop:
+                    updated['pendingLogin']['replaceDesktop'] = True
             else:
                 shutil.copytree(source, stage, symlinks=True, copy_function=clone_copy)
                 self.merge_code(stage, updated)

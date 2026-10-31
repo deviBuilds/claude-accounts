@@ -17,7 +17,7 @@ def discover(home, index):
     labels |= {p.stem.removeprefix('onboarding-') for p in (home / '.claude-desktop-profiles').glob('onboarding-*.json')}
     if index.get('pendingLogin'):
         labels.add(index['pendingLogin']['label'])
-    return sorted(label for label in labels if re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,31}', label))
+    return sorted(label for label in labels if label not in index.get('removedProfiles', {}) and re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,31}', label))
 
 
 def collect(home, read_credentials, identity, usage_loader=None):
@@ -44,8 +44,10 @@ def collect(home, read_credentials, identity, usage_loader=None):
         pending = index.get('pendingLogin', {})
         known = saved or (pending if pending.get('label') == label else {})
         row = {'label': label, 'email': known.get('email'), 'email_source': 'saved Desktop profile' if saved else 'pending sign-in',
-               'desktop_saved': bool(saved), 'desktop_active': bool(active and known.get('account') == active),
-               'pending': pending.get('label') == label, 'cli_state': 'unverified', 'cli_detail': '', 'expires_at': None}
+               'cli_account': None, 'cli_email': None, 'cli_organization': None,
+               'desktop_account': saved.get('account'), 'desktop_email': saved.get('email'),
+               'identity_drift': False, 'desktop_saved': bool(saved), 'desktop_active': bool(active and known.get('account') == active),
+               'pending': pending.get('label') == label, 'desktop_changing': pending.get('label') == label and pending.get('replaceDesktop', False), 'cli_state': 'unverified', 'cli_detail': '', 'expires_at': None}
         if usage_loader:
             row['usage'] = usage_loader(home, known.get('account'))
         if 'cli' not in components:
@@ -65,12 +67,14 @@ def collect(home, read_credentials, identity, usage_loader=None):
             row.update(cli_state='missing', cli_detail=str(error))
             return row
         try:
-            account, _, email = identity(config)
-            row.update(email=email, email_source='verified with Anthropic', cli_state='ready',
-                       cli_detail='Account verified with Anthropic.', desktop_active=account == active)
+            account, organization, email = identity(config)
+            row.update(cli_account=account, cli_organization=organization, cli_email=email,
+                       cli_desktop_matches=account == active, email=email, email_source='verified with Anthropic', cli_state='ready',
+                       cli_detail='Account verified with Anthropic.', desktop_active=(saved.get('account') == active if saved else account == active))
             if usage_loader:
                 row['usage'] = usage_loader(home, account, credential)
             if saved and saved.get('account') != account:
+                row['identity_drift'] = True
                 row['cli_detail'] = 'CLI account differs from the saved Desktop profile: ' + str(saved.get('email'))
         except (RuntimeError, OSError) as error:
             row.update(cli_state='unverified', cli_detail=str(error))
@@ -81,8 +85,15 @@ def collect(home, read_credentials, identity, usage_loader=None):
         if 'cli' not in components and index['profiles'] and 'a' not in index['profiles'] and not (manager.store/'onboarding-a.json').exists():
             labels = [label for label in labels if label != 'a']
         accounts = list(pool.map(inspect, labels))
+    from profile_management import repair_plan
+    identities = {r['label']: {'account': r['cli_account'], 'organization': r['cli_organization'], 'email': r['cli_email']}
+                  for r in accounts if r.get('cli_account') and r['cli_state'] == 'ready'}
+    plan = repair_plan(index, identities)
     first_run = len(accounts) == 1 and accounts[0]['label'] == 'a' and accounts[0]['cli_state'] in ('missing', 'not_selected') and not index.get('profiles')
-    return {'accounts': accounts, 'desktop_running': lifecycle['running'], 'desktop_background': lifecycle['background'], 'desktop_detail': desktop_detail,
+    active_email = next((r['cli_email'] for r in accounts if active and r.get('cli_account') == active), None)
+    if not active_email:
+        active_email = next((p.get('email') for p in index['profiles'].values() if active and p.get('account') == active), None)
+    return {'accounts': accounts, 'active_email': active_email, 'reconcile_plan': plan, 'removed_profiles': sorted(index.get('removedProfiles', {})), 'desktop_running': lifecycle['running'], 'desktop_background': lifecycle['background'], 'desktop_detail': desktop_detail,
             'first_run': first_run, 'cli_available': bool(shutil.which('claude')), 'desktop_installed': Path(dp.APP).is_dir(),
             'active_account': active, 'pending_login': index.get('pendingLogin'),
             'recovery_pending': manager.journal.exists(), 'errors': errors, 'checked_at': time.time()}

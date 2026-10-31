@@ -60,6 +60,8 @@ def disabled_reason(action, account, state):
         return 'There is no interrupted switch to recover.'
     if action in ('switch', 'save', 'login', 'cli') and not account:
         return 'Wait for accounts to load, then select an account.'
+    if action == 'switch' and account.get('identity_drift'):
+        return 'CLI and Desktop logins differ. Resolve the mismatch before switching this profile.'
     if action == 'switch' and account.get('desktop_active'):
         return 'Already selected in Desktop. No account switch is needed.'
     if action == 'switch' and not account.get('desktop_saved'):
@@ -215,7 +217,7 @@ class App:
         return tuple(signature)
 
     def watch_desktop(self):
-        if self.demo or self.modal or self.page != 'wizard' or self.wizard['stage'] != 'finish':
+        if self.demo or self.modal or (self.page != 'desktop_change' and (self.page != 'wizard' or self.wizard['stage'] != 'finish')):
             return
         now = time.monotonic()
         if now - self.desktop_checked < 1.5 or now - self.last_refresh < 3:
@@ -232,9 +234,9 @@ class App:
             return False
         if 'desktop' not in self.components:
             stage = 'complete'
-        elif row.get('desktop_active') and row.get('desktop_saved') and not row.get('pending'):
+        elif row.get('desktop_active') and row.get('desktop_saved') and not row.get('pending') and not row.get('identity_drift'):
             stage = 'complete'
-        elif row.get('pending') or row.get('desktop_active'):
+        elif row.get('pending') or row.get('cli_desktop_matches', row.get('desktop_active')):
             stage = 'finish'
         else:
             stage = 'desktop'
@@ -267,7 +269,7 @@ class App:
                                                           'Retry sign-in or check the existing login to continue.'])
         elif self.page == 'wizard' and self.wizard['stage'] in ('desktop', 'finish'):
             row = self.account or {}
-            if row.get('desktop_active'):
+            if row.get('cli_desktop_matches', row.get('desktop_active')) and not row.get('identity_drift'):
                 self.wizard['stage'] = 'complete' if row.get('desktop_saved') and not row.get('pending') else 'finish'
                 self.cursor = 0
                 self.notice = ('Desktop login is already saved.' if self.wizard['stage'] == 'complete'
@@ -296,7 +298,10 @@ class App:
                 if row['label'] == worker.label and row.get('refresh_id') in (worker.generation, result.get('before_id'), result.get('refresh_id')):
                     row.update({k: v for k, v in result.items() if k in ('cli_state', 'cli_detail', 'refresh_id', 'expires_at', 'email')})
                     if result['cli_state'] == 'ready':
-                        row.update(email_source='verified with Anthropic', desktop_active=result['account'] == self.state.get('active_account'))
+                        row.update(email_source='verified with Anthropic', cli_email=result['email'], cli_account=result['account'],
+                                   identity_drift=bool(row.get('desktop_account') and row['desktop_account'] != result['account']),
+                                   cli_desktop_matches=result['account'] == self.state.get('active_account'),
+                                   desktop_active=(row.get('desktop_account') or result['account']) == self.state.get('active_account'))
             if result['cli_state'] == 'ready':
                 self.notice = f'CLI login refreshed for account {worker.label}.'
                 self.refresh_pending = True
@@ -364,7 +369,7 @@ class App:
                         if (self.page, self.label, (self.wizard or {}).get('stage')) == (page, label, stage):
                             self.dispatch(action)
                 elif value:
-                    if job in ('save', 'onboard:finish', 'onboard:finish-desktop') and any('DESKTOP_BUSY:' in line for line in self.logs):
+                    if job in ('save', 'onboard:finish', 'onboard:finish-desktop', 'manage:finish-desktop-change') and any('DESKTOP_BUSY:' in line for line in self.logs):
                         action = job.removeprefix('onboard:')
                         self.desktop_save_blocked(action)
                         return
@@ -374,6 +379,15 @@ class App:
                             self.wizard['stage'] = 'desktop'
                             self.cursor = 0
                         self.refresh()
+                elif job.startswith('manage:'):
+                    action = job.split(':', 1)[1]
+                    if action == 'reset-cli-setup':
+                        self.launch_cli(self.label, authenticate=True, email_hint=getattr(self, 'login_hint', ''))
+                        return
+                    self.goto('desktop_change' if action in ('begin-desktop-change', 'desktop-to-cli') else
+                              'home' if action in ('remove', 'restore') else 'account')
+                    self.notice = ' '.join(self.logs[-2:])
+                    self.refresh()
                 elif job.startswith('onboard:'):
                     action = job.split(':')[1]
                     self.wizard['stage'] = {'create': 'cli', 'prepare': 'finish', 'finish': 'complete', 'create-desktop': 'desktop', 'prepare-desktop': 'finish', 'finish-desktop': 'complete'}[action]
@@ -451,7 +465,7 @@ class App:
                            ('quit', 'Quit', '')]
         if self.page == 'account':
             a = self.account or {}
-            desktop = [('switch', 'Switch Desktop to this account', 'Save the current account automatically, then restore this login')] if a.get('desktop_saved') and not a.get('desktop_active') else []
+            desktop = [('switch', 'Switch Desktop to this account', 'Save the current account automatically, then restore this login')] if a.get('desktop_saved') and not a.get('desktop_active') and not a.get('identity_drift') else []
             setup = []
             if not a.get('desktop_saved'):
                 if a.get('pending'):
@@ -461,21 +475,54 @@ class App:
                               if a.get('cli_state') == 'ready' else 'First verify your CLI login, then sign in to Desktop' if 'cli' in self.components else 'Sign in to Desktop and save this account')
                     setup = [('setup', 'Set up Desktop login', detail)]
             retry = [('retry_refresh', 'Retry background refresh', 'Try renewing this CLI login without opening the interactive CLI')] if a.get('cli_state') in ('refresh_failed', 'sign_in_required') else []
-            rows = desktop + setup + retry + [('usage', 'View usage limits', 'All usage windows, reset dates and last update time'),
+            repair = [('reconcile_menu', 'Resolve CLI/Desktop mismatch', 'Choose which login to keep and review the repair')] if a.get('identity_drift') else []
+            resume = [('desktop_change', 'Resume Desktop login change', 'Finish saving the new Desktop sign-in')] if a.get('desktop_changing') else []
+            rows = repair + resume + desktop + setup + retry + [('usage', 'View usage limits', 'All usage windows, reset dates and last update time'),
                               ('cli', 'Open CLI', 'Open an interactive Claude session; /exit returns here'),
-                              ('auth', 'Sign in to CLI', 'Open the official browser sign-in flow'),
+                              ('auth', 'Refresh CLI sign-in', 'Open the official browser sign-in flow'),
                               ('save', 'Save current Desktop login', 'Verify it matches this CLI account first' if 'cli' in self.components else 'Verify and save the signed-in Desktop account'),
+                              ('manage', 'Manage profile', 'Change logins, reconcile identities, or remove this profile'),
                               ('back', 'Back to accounts', '')]
             if 'cli' not in self.components:
                 rows = [r for r in rows if r[0] not in ('cli', 'auth', 'retry_refresh', 'usage')]
             if 'desktop' not in self.components:
                 rows = [r for r in rows if r[0] not in ('switch', 'setup', 'save')]
+            if a.get('identity_drift') or a.get('desktop_changing'):
+                rows = [r for r in rows if r[0] != 'save']
             return rows
+        if self.page == 'manage':
+            rows = []
+            if 'cli' in self.components:
+                rows.append(('change_cli', 'Change CLI login', 'Choose a different account in the official sign-in flow'))
+            if 'desktop' in self.components:
+                rows.append(('change_desktop', 'Change Desktop login', 'Preserve the old login and open a clean Desktop sign-in'))
+            if (self.account or {}).get('identity_drift'):
+                rows.append(('reconcile_menu', 'Reconcile CLI and Desktop', 'Review both identities and choose which to keep'))
+            if (self.account or {}).get('pending'):
+                rows.append(('cancel_desktop', 'Cancel pending Desktop setup', 'Keep saved logins and current app data'))
+            return rows + [('remove_profile', 'Remove profile from manager', 'Retain logins and history; restore later from Tools'),
+                           ('back', 'Back to profile', '')]
+        if self.page == 'reconcile':
+            plan = self.state.get('reconcile_plan', {})
+            rows = []
+            if any(c['label'] == self.label for c in plan.get('changes', [])):
+                rows.append(('repair_bindings', 'Match saved Desktop logins to CLI accounts', 'Reuse verified saved logins; preview every affected profile'))
+            return rows + [('desktop_to_cli', 'Keep CLI account; sign Desktop into it', 'Preserve the old Desktop login, then sign in to the CLI account'),
+                           ('cli_to_desktop', 'Keep Desktop account; change CLI login', 'Sign CLI into the account saved for Desktop'),
+                           ('refresh', 'Refresh identities', ''), ('back', 'Back to profile', '')]
+        if self.page == 'desktop_change':
+            return [('save_desktop_change', 'Save new Desktop login', 'Verify and save the new login; retain the previous snapshot'),
+                    ('resume_desktop_change', 'Open Desktop to continue sign-in', ''),
+                    ('cancel_desktop', 'Cancel Desktop login change', 'Keep saved logins and current app data'),
+                    ('back', 'Back to profile', '')]
+        if self.page == 'removed':
+            return [('restore:' + label, 'Restore ' + label, 'Show this profile with its retained logins')
+                    for label in self.state.get('removed_profiles', [])] + [('back', 'Back to tools', '')]
         if self.page == 'tools':
             rows = [('sync', 'Sync local Code session history', 'Copy local session entries across accounts')] if set(setup_options.CHOICES).issubset(self.components) else []
             if self.state.get('recovery_pending'):
                 rows.insert(0, ('recover', 'Recover interrupted switch', 'Restore the original Desktop profile'))
-            return rows + [('back', 'Back to accounts', '')]
+            return rows + [('removed', 'Removed profiles', 'Restore a profile removed from the manager'), ('back', 'Back to accounts', '')]
         if self.page == 'wizard':
             stage = self.wizard['stage']
             if stage == 'cli':
@@ -520,12 +567,54 @@ class App:
     def dispatch(self, action):
         if self.worker:
             return
-        if self.cli_worker and self.label == self.cli_worker.label and action in ('cli', 'auth', 'wizard_auth', 'wizard_cli', 'setup', 'save', 'prepare', 'finish', 'verify_cli', 'retry_refresh'):
+        if self.cli_worker and self.label == self.cli_worker.label and action in ('cli', 'auth', 'wizard_auth', 'wizard_cli', 'setup', 'save', 'prepare', 'finish', 'verify_cli', 'retry_refresh', 'change_cli', 'cli_to_desktop', 'change_desktop', 'desktop_to_cli', 'repair_bindings', 'remove_profile'):
             self.notice = 'This CLI login is refreshing in the background. Please wait before using its login actions.'
             return
         if action.startswith('account:'):
             self.label = action.split(':', 1)[1]
             self.goto('account')
+        elif action in ('manage', 'reconcile_menu', 'desktop_change', 'removed'):
+            self.goto({'reconcile_menu': 'reconcile'}.get(action, action))
+        elif action == 'back' and self.page in ('manage', 'reconcile', 'desktop_change', 'removed'):
+            self.goto('tools' if self.page == 'removed' else 'account')
+        elif action.startswith('restore:'):
+            self.label = action.split(':', 1)[1]
+            self.confirm('manage:restore', 'Restore profile ' + self.label + '?', ['Show the retained CLI and Desktop logins in the manager again.'])
+        elif action in ('change_cli', 'cli_to_desktop'):
+            self.login_hint = ((self.account or {}).get('desktop_email') or '') if action == 'cli_to_desktop' else ''
+            self.confirm('manage:reset-cli-setup', 'Change CLI login for ' + self.label + '?',
+                         ['Choose ' + (self.login_hint or 'the new account') + ' in the official sign-in flow.',
+                          'This replaces the CLI login for this profile. Its saved Desktop login stays unchanged.',
+                          'After sign-in, the manager checks the identity and reports any mismatch.'])
+        elif action in ('change_desktop', 'desktop_to_cli'):
+            op = 'desktop-to-cli' if action == 'desktop_to_cli' else 'begin-desktop-change'
+            target = (self.account or {}).get('cli_email') if action == 'desktop_to_cli' else None
+            self.confirm('manage:' + op, 'Change Desktop login for ' + self.label + '?',
+                         ['Preserve the current Desktop login, then open a clean sign-in.',
+                          'Sign into ' + target + '.' if target else 'Choose the new Desktop account in the browser.',
+                          'Desktop will quit and reopen. Running Desktop sessions will pause.',
+                          'The old saved login is retained until the new login is verified and saved.'])
+        elif action == 'repair_bindings':
+            plan = self.state.get('reconcile_plan', {})
+            if not any(c['label'] == self.label for c in plan.get('changes', [])):
+                self.message('No saved match', ['Refresh identities or choose a sign-in option.'])
+                return
+            lines = [f"{c['label']}: Desktop {c['before'].get('email') or c['before']['account']} → {c['after'].get('email') or c['after']['account']}"
+                     for c in plan['changes']]
+            self.confirm('manage:reconcile:' + plan['signature'], 'Match Desktop to current CLI logins?',
+                         lines + ['These saved associations change together. CLI logins and the running Desktop app stay unchanged.'])
+        elif action == 'remove_profile':
+            self.confirm('manage:remove', 'Remove profile ' + self.label + '?',
+                         ['Remove this profile from the manager’s list.',
+                          'CLI configuration, Keychain logins, saved Desktop data and shared history are retained. Neither app is signed out.',
+                          'Restore it from Tools → Removed profiles. The label stays reserved.'])
+        elif action == 'save_desktop_change':
+            self.request_desktop_save('manage:finish-desktop-change')
+        elif action == 'resume_desktop_change':
+            self.start('manage:begin-desktop-change')
+        elif action == 'cancel_desktop':
+            self.confirm('manage:cancel-desktop-change', 'Cancel Desktop setup?',
+                         ['Keep the saved login and leave the current Desktop app unchanged. You can switch to a saved login afterward.'])
         elif action == 'first_account':
             if 'cli' in self.components and not self.state.get('cli_available', True):
                 self.message('Install Claude Code first', ['Install Claude Code from https://code.claude.com/docs/en/setup',
@@ -601,6 +690,21 @@ class App:
     def start(self, action):
         if action.startswith(('close_save:', 'stop_save:', 'retry_save:')):
             action = action.split(':', 1)[1]
+        if action.startswith('manage:'):
+            if self.demo:
+                self.message('Demo mode', ['Profile changes are disabled.'])
+                return
+            if self.state.get('recovery_pending'):
+                self.message('Recovery required', ['Recover the interrupted switch from Tools first.'])
+                return
+            parts = action.split(':', 2)
+            args = [parts[1], self.label]
+            if len(parts) == 3:
+                args += ['--expected', parts[2]]
+            self.logs = []
+            self.worker = Worker(runtime.command(ONBOARD, *args))
+            self.job = 'manage:' + parts[1]
+            return
         if action in ('finish', 'finish-desktop'):
             self.start_onboarding(action)
             return
@@ -618,7 +722,7 @@ class App:
         self.worker = Worker(helper_args(action, self.label or 'a'))
         self.job = action
 
-    def launch_cli(self, label, authenticate=False):
+    def launch_cli(self, label, authenticate=False, email_hint=None):
         if self.demo:
             self.message('Demo mode', ['CLI launch is disabled in demo mode.'])
             return
@@ -628,8 +732,9 @@ class App:
             return
         command = [executable, 'auth', 'login', '--claudeai'] if authenticate else [executable, '--safe-mode']
         env = {**cli_environment(label), 'CLAUDE_CODE_SAFE_MODE': '1'}
-        if authenticate and self.account and '@' in (self.account.get('email') or ''):
-            command += ['--email', self.account['email']]
+        hint = ((self.account or {}).get('cli_email') or (self.account or {}).get('email')) if email_hint is None else email_hint
+        if authenticate and hint and '@' in hint:
+            command += ['--email', hint]
         command = runtime.interactive_command(command)
         result = 1
         self.logs = []
@@ -679,15 +784,26 @@ class App:
     def header(self):
         if self.page == 'home':
             return 'Choose an account', ['One selection at a time. Press Enter to open it.']
+        if self.page == 'removed':
+            return 'Removed profiles', ['Logins and local history were retained. Restore a profile to show it again.']
         if self.page == 'tools':
             return 'Accounts / Tools', ['Maintenance actions']
         a = self.account or {}
         who = a.get('email') or self.label or 'new account'
+        if self.page in ('manage', 'reconcile', 'desktop_change'):
+            details = ['CLI: ' + str(a.get('cli_email') or 'Not verified'),
+                       'Saved Desktop: ' + str(a.get('desktop_email') or a.get('desktop_account') or 'Not saved')]
+            if self.page == 'desktop_change':
+                details += ['Current Desktop: ' + str(self.state.get('active_email') or self.state.get('active_account') or 'Not signed in'),
+                            'Complete the new sign-in in Desktop, then save it here. Previous saved logins are retained.']
+            return {'manage': 'Manage profile / ', 'reconcile': 'Reconcile logins / ', 'desktop_change': 'Change Desktop login / '}[self.page] + str(self.label), details
         if self.page == 'account':
-            details = [a.get('cli_detail', 'Account status is loading.')]
+            details = ['CLI: ' + str(a.get('cli_email') or (a.get('email') if a.get('cli_state') == 'ready' else None) or 'Not verified'),
+                       'Saved Desktop: ' + str(a.get('desktop_email') or a.get('desktop_account') or 'Not saved'),
+                       a.get('cli_detail', 'Account status is loading.')]
             if a.get('desktop_active'):
-                details.insert(0, 'Already selected in Desktop.')
-            return 'Accounts / ' + str(who), details
+                details.insert(0, 'Saved Desktop login is currently active.' if a.get('identity_drift') else 'Already selected in Desktop.')
+            return ('Profile ' + str(self.label) + ' / logins differ' if a.get('identity_drift') else 'Accounts / ' + str(who)), details
         stage = self.wizard['stage']
         titles = {'name': 'Add account — choose a label', 'cli': 'Step 1 of 3 — CLI sign-in',
                   'desktop': 'Step 2 of 3 — Desktop sign-in', 'finish': 'Step 3 of 3 — Verify and save',
@@ -750,7 +866,7 @@ class App:
         label = '[' + row['label'] + ']'
         self.put(y, 5, label, self.color(10 if selected else 19) | curses.A_BOLD, min(len(label), width-7))
         x = 6 + len(label)
-        self.put(y, x, row.get('email') or (f'Desktop account {row["label"]}' if row.get('desktop_saved') else 'Identity not verified'),
+        self.put(y, x, ('CLI: ' + str(row.get('cli_email') or row.get('email'))) if row.get('identity_drift') else row.get('email') or (f'Desktop account {row["label"]}' if row.get('desktop_saved') else 'Identity not verified'),
                  self.color(base) | curses.A_BOLD, width-x)
         cli = row.get('cli_state', 'unknown')
         role = 14 if cli == 'ready' else 16 if cli == 'refreshing' else 17 if cli == 'sign_in_required' else 15
@@ -758,6 +874,8 @@ class App:
         x = self.badge(y+1, 5, 'CLI ' + display, role, width+2)
         if 'desktop' not in self.components:
             text, role = 'Desktop not selected', 13
+        elif row.get('identity_drift'):
+            text, role = 'LOGIN MISMATCH', 15
         elif row.get('desktop_active'):
             text, role = 'Desktop active', 16
         elif row.get('pending'):
@@ -767,6 +885,10 @@ class App:
         else:
             text, role = 'Desktop: setup needed', 15
         self.badge(y+1, x, text, role, width+2)
+        if row.get('identity_drift'):
+            self.fill(y+2, 2, width, base)
+            self.put(y+2, 5, 'Desktop: ' + str(row.get('desktop_email') or row.get('desktop_account')), self.color(15), width-4)
+            y += 1
         usage = row.get('usage', {})
         windows = [w for w in usage.get('windows', []) if w['key'] in ('session', 'weekly_all')]
         for offset in (2, 3):
@@ -802,7 +924,7 @@ class App:
         if self.demo:
             self.put(1, 23, 'DEMO', self.color(19))
         active = next((a for a in self.state.get('accounts', []) if a.get('desktop_active')), None)
-        desktop = (active.get('email') or active['label']) if active else self.state.get('desktop_detail', 'Checking...')
+        desktop = self.state.get('active_email') or ((active.get('desktop_email') or active.get('desktop_account') or active.get('email') or active['label']) if active else self.state.get('desktop_detail', 'Checking...'))
         running = self.state.get('desktop_running')
         self.put(3, 2, 'DESKTOP', self.color(4))
         self.put(3, 11, str(desktop), self.color(2 if active else 4), cw-10)
@@ -860,7 +982,7 @@ class App:
                     action = rows[i][0]
                     group = 'ACCOUNTS' if action.startswith('account:') else 'ACTIONS'
                     heading = self.page == 'home' and group != previous
-                    size = 5 if action.startswith('account:') else 1
+                    size = (6 if next(a for a in self.state['accounts'] if a['label'] == action.split(':', 1)[1]).get('identity_drift') else 5) if action.startswith('account:') else 1
                     if position + size + int(heading) > height-5:
                         break
                     if heading:
@@ -963,7 +1085,13 @@ class App:
         self.put(divider, x+3, '─'*(panel_width-6), self.color(21), panel_width-6)
         label = {'switch': 'Switch', 'save': 'Save login', 'cli': 'Open CLI',
                  'recover': 'Recover', 'sync': 'Sync history'}.get(action, 'Continue')
-        if action and action.startswith('close_save:'):
+        if action and action.startswith('manage:remove'):
+            label = 'Remove profile'
+        elif action and action.startswith('manage:restore'):
+            label = 'Restore profile'
+        elif action and action.startswith('manage:reconcile:'):
+            label = 'Apply repair'
+        elif action and action.startswith('close_save:'):
             label = 'Close Desktop and save'
         elif action and action.startswith('stop_save:'):
             label = 'Stop tasks and save'
@@ -1076,6 +1204,8 @@ def main(argv=None):
         if args.demo:
             parser.error('--cli cannot be combined with --demo')
         try:
+            if args.cli in dp.Profiles(Path.home(), None, None).index().get('removedProfiles', {}):
+                parser.error('This profile was removed. Restore it from Tools → Removed profiles.')
             env = cli_environment(args.cli)
         except ValueError as error:
             parser.error(str(error))

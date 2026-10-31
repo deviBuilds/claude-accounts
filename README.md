@@ -136,6 +136,40 @@ last successful update. Usage percentages and automatic CLI renewal require a
 CLI login and are unavailable in Desktop-only mode. Usage is cached for five minutes; errors and stale readings
 are labeled. A reset passing does not imply a freshly confirmed 0% reading.
 
+### Manage and reconcile profiles
+
+Open an account → **Manage profile** to change its CLI login, change its Desktop
+login, or remove it from the manager.
+
+- **Change CLI login** opens the official sign-in flow for that profile. Its
+  Desktop login is retained. Choose the intended account in the browser.
+- **Change Desktop login** preserves the outgoing login and opens a clean Desktop
+  sign-in. Choose **Save new Desktop login** afterward. The previous saved login
+  remains available until the replacement is saved, and its snapshot is retained.
+  A cancelled change leaves the current app and saved logins intact.
+- **Remove profile from manager** hides the entry without signing either app out
+  or deleting Keychain credentials, CLI settings, shared history, or snapshots.
+  This is reversible removal, not credential deletion. Use **Tools → Removed
+  profiles** to restore it. Its label remains reserved until restored, including
+  the default profile a. The manager's --cli command rejects removed profiles.
+
+When CLI and Desktop identities differ, the account card shows **LOGIN MISMATCH**
+and the account menu offers **Resolve CLI/Desktop mismatch**. Both identities are
+shown separately. Choose which to keep:
+
+- **Match saved Desktop logins to CLI accounts** previews all available repairs,
+  including swapped profiles. It verifies the saved encrypted logins and updates
+  the associations together. CLI credentials and the running Desktop app are
+  unchanged. If identities changed after the preview, refresh and review again.
+- **Keep CLI account; sign Desktop into it** starts a fresh Desktop sign-in and
+  requires the saved result to match that CLI identity.
+- **Keep Desktop account; change CLI login** opens official CLI sign-in with the
+  saved Desktop email when known. The manager reports any mismatch afterward.
+
+Previous Desktop associations are retained in the local profile index. Credentials
+are never copied between CLI profiles. Switching a mismatched profile is blocked
+until its identities are reconciled.
+
 Open a CLI profile from any shell without configuring aliases:
 
 ```sh

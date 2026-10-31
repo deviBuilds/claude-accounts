@@ -30,6 +30,8 @@ def progress_path(manager, label):
 def create(manager, label):
     validate(label)
     index = manager.index()
+    if label in index.get('removedProfiles', {}):
+        raise RuntimeError('This label was removed. Restore it from Tools → Removed profiles.')
     if label == 'a' or label in index['profiles'] or index.get('pendingLogin', {}).get('label') == label:
         raise RuntimeError('That label is already in use. Select the existing account to resume setup.')
     target = manager.home / ('.claude-acct-' + label)
@@ -141,6 +143,8 @@ def finish(manager, label):
 
 def create_desktop(manager, label):
     validate(label)
+    if label in manager.index().get('removedProfiles', {}):
+        raise RuntimeError('This label was removed. Restore it from Tools → Removed profiles.')
     if label in manager.index()['profiles'] or progress_path(manager, label).exists():
         raise RuntimeError('That label is already in use. Select it to resume setup.')
     if (manager.home / ('.claude-acct-' + label)).exists():
@@ -216,8 +220,9 @@ def finish_desktop(manager, label):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['create', 'prepare', 'finish', 'create-desktop', 'prepare-desktop', 'finish-desktop'])
+    parser.add_argument('action', choices=['create', 'prepare', 'finish', 'create-desktop', 'prepare-desktop', 'finish-desktop', 'remove', 'restore', 'reconcile', 'reset-cli-setup', 'begin-desktop-change', 'finish-desktop-change', 'cancel-desktop-change', 'desktop-to-cli'])
     parser.add_argument('label')
+    parser.add_argument('--expected')
     args = parser.parse_args()
     validate(args.label)
     spec = importlib.util.spec_from_file_location('desktop_sync', Path(__file__).with_name('desktop-sync.py'))
@@ -227,6 +232,9 @@ def main():
     with manager.locked():
         if manager.journal.exists():
             raise RuntimeError('Recover the interrupted Desktop switch from Tools before continuing setup.')
+        if args.action not in ('create', 'prepare', 'finish', 'create-desktop', 'prepare-desktop', 'finish-desktop'):
+            import profile_management
+            return profile_management.handle(manager, args.action, args.label, args.expected)
         {'create': create, 'prepare': prepare, 'finish': finish, 'create-desktop': create_desktop,
          'prepare-desktop': prepare_desktop, 'finish-desktop': finish_desktop}[args.action](manager, args.label)
 
