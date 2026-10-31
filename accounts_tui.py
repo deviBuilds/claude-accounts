@@ -1374,9 +1374,12 @@ class App:
                 'Expired or revoked Desktop logins may still require browser sign-in.'])
 
     def run(self):
+        interrupted = False
         def interrupt(*_):
+            nonlocal interrupted
             if not self.worker:
-                raise KeyboardInterrupt
+                interrupted = True
+                self.running = False
         previous = signal.signal(signal.SIGINT, interrupt)
         try:
             while self.running:
@@ -1388,9 +1391,12 @@ class App:
         except KeyboardInterrupt:
             pass
         finally:
-            signal.signal(signal.SIGINT, previous)
+            # Keep the non-raising handler installed throughout cleanup. Repeated
+            # Ctrl+C must not interrupt worker shutdown or curses restoration.
             if self.cli_worker:
                 self.cli_worker.close()
+            signal.signal(signal.SIGINT, previous)
+        return 130 if interrupted else 0
 
 
 def main(argv=None):
@@ -1427,7 +1433,10 @@ def main(argv=None):
         print('Open claude-accounts in an interactive terminal. Use claude-desktop-sync --status-json for scripts.', file=sys.stderr)
         return 2
     try:
-        curses.wrapper(lambda screen: App(screen, args.demo, args.onboard).run())
+        return curses.wrapper(lambda screen: App(screen, args.demo, args.onboard).run()) or 0
+    except KeyboardInterrupt:
+        # Covers startup and the small window after restoring the old handler.
+        return 130
     except curses.error:
         print('The terminal could not be initialized. Use a terminal with TERM=xterm-256color.', file=sys.stderr)
         return 1

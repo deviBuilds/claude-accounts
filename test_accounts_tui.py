@@ -115,6 +115,27 @@ class TuiTests(unittest.TestCase):
             if not title.startswith('['):
                 self.assertIn(title, text)
 
+    def test_interrupt_during_handler_install_and_restore_does_not_raise(self):
+        previous = signal.getsignal(signal.SIGINT)
+        installed = []
+        def register(number, handler):
+            self.assertEqual(number, signal.SIGINT)
+            if not installed:
+                installed.append(handler)
+                handler(number, None)
+            else:
+                # Reproduce Ctrl+C arriving inside signal.signal() in finally.
+                installed[0](number, None)
+                self.assertIs(handler, previous)
+            return previous
+        with patch('signal.signal', side_effect=register):
+            self.assertEqual(self.app.run(), 130)
+        self.assertFalse(self.app.running)
+
+    def test_keyboard_interrupt_during_curses_startup_is_clean(self):
+        with patch.object(sys.stdin, 'isatty', return_value=True), patch.object(sys.stdout, 'isatty', return_value=True), patch('curses.wrapper', side_effect=KeyboardInterrupt):
+            self.assertEqual(tui.main(['--demo']), 130)
+
     def test_first_run_enters_default_profile_wizard_and_reports_missing_cli(self):
         self.app.state = {'first_run': True, 'cli_available': True,
                           'accounts': [{'label': 'a', 'cli_state': 'missing'}]}
