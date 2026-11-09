@@ -215,6 +215,18 @@ login, or remove it from the manager.
 
 - **Change CLI login** opens the official sign-in flow for that profile. Its
   Desktop login is retained. Choose the intended account in the browser.
+- **Import CLI login from JSON** accepts a token export (`access_token`,
+  `refresh_token`, and a timezone-qualified `expired` timestamp) or native
+  `claudeAiOauth` credentials. Paste or drag in the file path, verify the account,
+  then confirm **Import login**. This option is also available during CLI setup.
+  The token is verified directly with Anthropic. A saved Desktop association or
+  verified setup identity determines the expected account; otherwise the current
+  CLI login is checked, with cached identity as a fallback when that login is
+  missing, expired or revoked. A new, unassigned profile shows the verified account
+  for confirmation. Mismatches and expired imports are rejected before writing.
+  The importer updates macOS Keychain and repairs cached CLI identity from the
+  server response while preserving settings and history. macOS may request
+  Keychain permission. Restart an already-open CLI to reload its identity.
 - **Change Desktop login** preserves the outgoing login and opens a clean Desktop
   sign-in. Choose **Save new Desktop login** afterward. The previous saved login
   remains available until the replacement is saved, and its snapshot is retained.

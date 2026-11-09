@@ -43,6 +43,109 @@ class TuiTests(unittest.TestCase):
         self.screen = Screen()
         self.app = tui.App(self.screen, demo=True)
 
+    def test_import_menu_path_entry_cancel_and_small_terminal(self):
+        self.app.label = 'b'
+        self.app.goto('manage')
+        self.assertIn('import_cli', [r[0] for r in self.app.items()])
+        self.app.dispatch('import_cli')
+        for char in '/tmp/login éxport ć (1).json':
+            self.app.key(char)
+        self.assertEqual(self.app.input_text, '/tmp/login éxport ć (1).json')
+        self.screen.size = (20, 60)
+        self.app.draw()
+        self.assertIn('Enter: verify file', ' '.join(self.screen.text))
+        self.assertIn('login éxport ć (1).json', ' '.join(self.screen.text))
+        self.app.key(21)
+        self.assertEqual(self.app.input_text, '')
+        self.app.key(27)
+        self.assertEqual(self.app.page, 'manage')
+        self.app.components = ['desktop']
+        self.assertNotIn('import_cli', [r[0] for r in self.app.items()])
+
+    def test_import_preview_confirm_apply_and_status_refresh(self):
+        import queue
+        self.app.demo = False
+        self.app.label = 'b'
+        self.app.goto('manage')
+        self.app.dispatch('import_cli')
+        self.app.input_text = '/tmp/login file.json'
+        worker = SimpleNamespace(events=queue.Queue())
+        with patch.object(tui, 'Worker', return_value=worker) as create:
+            self.app.key(10)
+            self.assertEqual(self.app.job, 'import:preview')
+            self.assertEqual(create.call_args.args[0][-2:], ['b', '/tmp/login file.json'])
+            self.assertEqual(create.call_args.kwargs, {'json_event': 'import_preview'})
+            review = {'email': 'one@example.test', 'source': 'saved Desktop profile', 'signature': 'opaque'}
+            worker.events.put(('import_preview', review))
+            worker.events.put(('done', 0))
+            self.app.poll()
+            self.assertEqual(self.app.modal[1], 'import:apply')
+            self.assertIn('one@example.test', ' '.join(self.app.modal[3]))
+            self.app.key(10)
+            self.assertEqual(self.app.job, 'import:apply')
+            self.assertEqual(create.call_args.args[0][-2:], ['--apply', 'opaque'])
+            worker.events.put(('line', 'CLI login imported.'))
+            worker.events.put(('done', 0))
+            with patch.object(self.app, 'refresh') as refresh:
+                self.app.poll()
+                refresh.assert_called_once()
+            self.assertEqual(self.app.page, 'manage')
+
+    def test_import_cancel_never_applies_and_demo_never_runs_helper(self):
+        self.app.label = 'b'
+        self.app.goto('manage')
+        self.app.dispatch('import_cli')
+        self.app.input_text = '/tmp/login.json'
+        with patch.object(tui, 'Worker') as worker:
+            self.app.key(10)
+            self.assertEqual(self.app.modal[2], 'Demo mode')
+            worker.assert_not_called()
+        self.app.modal = ('confirm', 'import:apply', 'Import', [])
+        with patch.object(self.app, 'start') as start:
+            self.app.key(27)
+            start.assert_not_called()
+        self.assertEqual(self.app.page, 'import_cli')
+
+    def test_import_onboarding_returns_to_wizard_and_verifies_without_restart(self):
+        import queue
+        self.app.label = 'b'
+        self.app.page = 'wizard'
+        self.app.wizard = {'stage': 'cli'}
+        self.assertIn('import_cli', [r[0] for r in self.app.items()])
+        self.app.dispatch('import_cli')
+        worker = SimpleNamespace(events=queue.Queue())
+        worker.events.put(('done', 0))
+        self.app.worker, self.app.job = worker, 'import:apply'
+        with patch.object(self.app, 'refresh') as refresh:
+            self.app.poll()
+            refresh.assert_called_once_with(after='verify_cli')
+        self.assertEqual(self.app.page, 'wizard')
+        self.assertEqual(self.app.wizard['stage'], 'cli')
+
+    def test_import_error_preserves_path_and_profile(self):
+        import queue
+        self.app.label = 'b'
+        self.app.goto('manage')
+        self.app.dispatch('import_cli')
+        self.app.input_text = '/tmp/login.json'
+        worker = SimpleNamespace(events=queue.Queue())
+        worker.events.put(('line', 'The imported login does not match this profile.'))
+        worker.events.put(('done', 1))
+        self.app.worker, self.app.job = worker, 'import:preview'
+        self.app.poll()
+        self.assertEqual(self.app.modal[2], 'Action needs attention')
+        self.app.key(10)
+        self.assertEqual(self.app.input_text, '/tmp/login.json')
+        self.assertEqual(self.app.label, 'b')
+
+    def test_import_preview_serializes_with_background_refresh(self):
+        self.app.label = 'b'
+        self.app.goto('manage')
+        self.app.cli_worker = SimpleNamespace(label='b')
+        self.app.dispatch('import_cli')
+        self.assertEqual(self.app.page, 'manage')
+        self.assertIn('refreshing', self.app.notice)
+
     def test_rotation_selection_space_and_demo_safety(self):
         self.app.dispatch('rotation')
         self.assertEqual(self.app.page, 'rotation')

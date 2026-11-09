@@ -26,6 +26,9 @@ def main():
     if sys.argv[1:2] == ['--rotation-helper']:
         import rotation
         return rotation.main(sys.argv[2:])
+    if sys.argv[1:2] == ['--cli-import-helper']:
+        import cli_import
+        return cli_import.main(sys.argv[2:])
     if sys.argv[1:2] == ['--codex-helper']:
         import codex_accounts
         return codex_accounts.main(sys.argv[2:])

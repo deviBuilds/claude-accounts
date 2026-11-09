@@ -6,7 +6,7 @@ import shlex
 import shutil
 import sys
 
-FILES = ('rotation.py', 'profile_management.py', 'accounts_tui.py', 'account_status.py', 'account_usage.py', 'cli_refresh.py',
+FILES = ('rotation.py', 'profile_management.py', 'accounts_tui.py', 'account_status.py', 'account_usage.py', 'cli_refresh.py', 'cli_import.py',
          'desktop-sync.py', 'desktop_profiles.py', 'onboarding.py', 'runtime.py', 'setup_options.py',
          'provider_app.py', 'codex_accounts.py', 'codex_rpc.py', 'codex_install.py', 'codex_desktop.py',
          'codex_history.py', 'codex_rotation.py', 'codex_tui.py')

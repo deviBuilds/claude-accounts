@@ -76,10 +76,11 @@ def disabled_reason(action, account, state):
 
 class Worker:
     """Subprocess output is queued so the terminal stays responsive during work."""
-    def __init__(self, command, status=False):
+    def __init__(self, command, status=False, json_event=None):
         self.events = queue.Queue()
         self.process = None
         self.status = status
+        self.json_event = json_event
         self.thread = threading.Thread(target=self.run, args=(command,), daemon=True)
         self.thread.start()
 
@@ -92,19 +93,20 @@ class Worker:
             with self.process.stdout as output:
                 for line in output:
                     line = line.rstrip('\n')
-                    if self.status:
+                    if self.status or self.json_event:
                         lines.append(line)
                     else:
                         self.events.put(('line', clean(line)))
             code = self.process.wait()
-            if self.status:
+            if self.status or self.json_event:
                 try:
                     data = json.loads('\n'.join(lines)) if code == 0 else None
-                    if not isinstance(data, dict) or not isinstance(data.get('accounts'), list):
+                    if not isinstance(data, dict) or (self.status and not isinstance(data.get('accounts'), list)):
                         raise ValueError('Account status could not be loaded')
-                    self.events.put(('status', data))
+                    self.events.put((self.json_event or 'status', data))
                 except (ValueError, TypeError):
-                    self.events.put(('line', 'Status check failed. ' + clean(' '.join(lines))[:500]))
+                    self.events.put(('line', ('Verification failed. ' if self.json_event else 'Status check failed. ') + clean(' '.join(lines))[:500]))
+                    code = code or 1
             self.events.put(('done', code))
         except OSError as error:
             self.events.put(('line', clean(error)))
@@ -316,7 +318,7 @@ class App:
                     if result['cli_state'] != 'ready':
                         self.message('CLI sign-in needs attention', [result['cli_detail']])
             self.advance_cli_setup()
-        if self.demo or self.worker or self.modal or self.cli_worker:
+        if self.demo or self.worker or self.modal or self.cli_worker or self.page == 'import_cli':
             return
         if self.refresh_pending:
             self.refresh_pending = False
@@ -339,7 +341,7 @@ class App:
     def poll(self):
         self.poll_cli_refresh()
         if not self.worker:
-            if self.cli_worker:
+            if self.cli_worker or self.page == 'import_cli':
                 return
             self.watch_desktop()
             if not self.demo and not self.worker and not self.modal and self.last_refresh > 0 and time.monotonic()-self.last_refresh >= account_usage.TTL:
@@ -355,6 +357,8 @@ class App:
             elif event == 'status':
                 self.state, self.status_received = value, True
                 self.apply_refresh_results()
+            elif event == 'import_preview':
+                self.import_review = value
             elif event == 'done':
                 job = self.job
                 self.worker, self.job = None, None
@@ -382,6 +386,19 @@ class App:
                             self.wizard['stage'] = 'desktop'
                             self.cursor = 0
                         self.refresh()
+                elif job == 'import:preview':
+                    review = self.import_review
+                    self.confirm('import:apply', 'Import verified CLI login?', [
+                        f'Profile {self.label}: {review["email"]}',
+                        'Matched against: ' + review['source'] + '.' if review['source'] != 'new profile' else 'This new profile will be assigned to the verified account above.',
+                        'Replace this profile’s CLI login and synchronize its cached account identity.',
+                        'macOS may ask you to allow Keychain access. Restart any CLI session still showing the old account.'])
+                elif job == 'import:apply':
+                    self.cli_results.pop(self.label, None)
+                    self.goto(self.import_return)
+                    self.input_text = ''
+                    self.notice = ' '.join(self.logs[-2:])
+                    self.refresh(after='verify_cli' if self.page == 'wizard' else None)
                 elif job.startswith('rotation:'):
                     self.notice = ' '.join(self.logs[-2:]) or 'Rotation check complete.'
                     self.refresh()
@@ -544,6 +561,7 @@ class App:
             rows = []
             if 'cli' in self.components:
                 rows.append(('change_cli', 'Change CLI login', 'Choose a different account in the official sign-in flow'))
+                rows.append(('import_cli', 'Import CLI login from JSON', 'Verify an exported login and repair this profile’s cached identity'))
             if 'desktop' in self.components:
                 rows.append(('change_desktop', 'Change Desktop login', 'Preserve the old login and open a clean Desktop sign-in'))
             if (self.account or {}).get('identity_drift'):
@@ -580,6 +598,7 @@ class App:
             if stage == 'cli':
                 rows = [('wizard_cli', 'Open CLI to sign in', 'Use /login in Claude, then /exit to return and verify'),
                         ('wizard_auth', 'Browser sign-in (alternative)', 'Run Claude auth login and return here when finished'),
+                        ('import_cli', 'Import CLI login from JSON', 'Use an existing exported Claude CLI login'),
                         ('verify_cli', 'Check existing CLI login', 'Continue if this profile is already signed in')]
                 if self.account and self.account.get('cli_state') in ('expired', 'refreshing'):
                     rows = [('verify_cli', 'Check login status', 'Your existing CLI login is being renewed automatically')]
@@ -619,7 +638,7 @@ class App:
     def dispatch(self, action):
         if self.worker:
             return
-        if self.cli_worker and self.label == self.cli_worker.label and action in ('cli', 'auth', 'wizard_auth', 'wizard_cli', 'setup', 'save', 'prepare', 'finish', 'verify_cli', 'retry_refresh', 'change_cli', 'cli_to_desktop', 'change_desktop', 'desktop_to_cli', 'repair_bindings', 'remove_profile'):
+        if self.cli_worker and self.label == self.cli_worker.label and action in ('cli', 'auth', 'wizard_auth', 'wizard_cli', 'setup', 'save', 'prepare', 'finish', 'verify_cli', 'retry_refresh', 'change_cli', 'cli_to_desktop', 'change_desktop', 'desktop_to_cli', 'repair_bindings', 'remove_profile', 'import_cli'):
             self.notice = 'This CLI login is refreshing in the background. Please wait before using its login actions.'
             return
         if action == 'rotation':
@@ -668,6 +687,11 @@ class App:
             self.goto('account')
         elif action in ('manage', 'reconcile_menu', 'desktop_change', 'removed'):
             self.goto({'reconcile_menu': 'reconcile'}.get(action, action))
+        elif action == 'import_cli':
+            self.import_return = self.page
+            self.input_text = ''
+            self.import_review = None
+            self.goto('import_cli')
         elif action == 'back' and self.page in ('manage', 'reconcile', 'desktop_change', 'removed', 'rotation'):
             self.goto('tools' if self.page in ('removed', 'rotation') else 'account')
         elif action.startswith('restore:'):
@@ -784,6 +808,29 @@ class App:
         self.job = 'onboard:' + action
 
     def start(self, action):
+        if action.startswith('import:'):
+            if self.demo:
+                self.message('Demo mode', ['Login imports are disabled. No accounts were changed.'])
+                return
+            if self.state.get('recovery_pending'):
+                self.message('Recovery required', ['Recover the interrupted switch from Tools first.'])
+                return
+            from cli_import import normalize_path
+            mode = action.split(':', 1)[1]
+            if mode == 'preview':
+                if not self.input_text.strip():
+                    self.notice = 'Enter the path to a JSON login file.'
+                    return
+                self.import_path = normalize_path(self.input_text)
+                self.import_review = None
+            args = [self.label, str(self.import_path)]
+            if mode == 'apply':
+                args += ['--apply', self.import_review['signature']]
+            self.logs = []
+            self.worker = Worker(runtime.command(Path(__file__).with_name('cli_import.py'), *args),
+                                 json_event='import_preview' if mode == 'preview' else None)
+            self.job = action
+            return
         if action.startswith(('close_save:', 'stop_save:', 'retry_save:')):
             action = action.split(':', 1)[1]
         if action.startswith('rotation:'):
@@ -894,6 +941,11 @@ class App:
             self.refresh()
 
     def header(self):
+        if self.page == 'import_cli':
+            return 'Import CLI login / ' + str(self.label), [
+                'Paste or drag in the JSON file path, then press Enter to verify.',
+                'The account is checked with Anthropic before you confirm the import.',
+                'Supports Claude token exports and native claudeAiOauth JSON.']
         if self.page == 'rotation':
             return 'Tools / Auto rotation', []
         if self.page == 'home':
@@ -1160,11 +1212,13 @@ class App:
                     self.put(y-1, cw-1, '…', self.color(4))
                 y += 1
         name_input = self.page == 'wizard' and self.wizard['stage'] == 'name'
-        if name_input:
+        if name_input or self.page == 'import_cli':
             self.fill(y, 2, cw, 8)
-            self.put(y, 4, 'Label: ' + self.input_text + '_', self.color(8) | curses.A_BOLD, cw-4)
+            prefix = 'File: ' if self.page == 'import_cli' else 'Label: '
+            visible = self.input_text[-max(1, cw-len(prefix)-6):]
+            self.put(y, 4, prefix + visible + '_', self.color(8) | curses.A_BOLD, cw-4)
             y += 2
-            footer = 'Type a label   Enter: create profile   Esc: cancel'
+            footer = 'Enter: verify file   Ctrl+U: clear   Esc: back' if self.page == 'import_cli' else 'Type a label   Enter: create profile   Esc: cancel'
             detail = ''
         else:
             rows = self.items()
@@ -1231,7 +1285,9 @@ class App:
         y = min(y+1, height-4)
         if self.worker:
             spinner = '|/-\\'[int(time.monotonic()*8) % 4]
-            status = 'Checking logins...' if self.job == 'status' else 'Working... Please wait.'
+            status = ('Checking logins...' if self.job == 'status' else
+                      'Verifying login… Allow macOS Keychain access if prompted.' if self.job == 'import:preview' else
+                      'Saving login… Allow macOS Keychain access if prompted.' if self.job == 'import:apply' else 'Working... Please wait.')
             self.put(y, 2, spinner + ' ' + status, self.color(1), cw)
         elif self.cli_worker:
             self.put(y, 2, f'Refreshing CLI login for account {self.cli_worker.label} in background…', self.color(1), cw)
@@ -1286,7 +1342,7 @@ class App:
         divider = y+panel_height-4
         self.put(divider, x+3, '─'*(panel_width-6), self.color(21), panel_width-6)
         label = {'switch': 'Switch', 'save': 'Save login', 'cli': 'Open CLI',
-                 'recover': 'Recover', 'sync': 'Sync history'}.get(action, 'Continue')
+                 'recover': 'Recover', 'sync': 'Sync history', 'import:apply': 'Import login'}.get(action, 'Continue')
         if action and action.startswith('manage:remove'):
             label = 'Remove profile'
         elif action and action.startswith('manage:restore'):
@@ -1307,10 +1363,15 @@ class App:
             self.put(y+panel_height+1, x+3, '↑/↓ scroll for more', self.color(4), panel_width-6)
 
     def key(self, key):
+        # get_wch is used on the path entry screen so pasted Unicode filenames
+        # survive intact. Keep ordinary menu/special keys in the existing format.
+        character = key if isinstance(key, str) else None
+        if character is not None:
+            key = ord(character)
         if self.worker:
             # Status is read-only. Keep navigation responsive and retain Enter
             # instead of silently swallowing a new profile's first login action.
-            if self.job == 'status' and not self.modal and not (self.page == 'wizard' and self.wizard['stage'] == 'name'):
+            if self.job == 'status' and not self.modal and self.page != 'import_cli' and not (self.page == 'wizard' and self.wizard['stage'] == 'name'):
                 rows = self.items()
                 if key in (curses.KEY_UP, ord('k'), curses.KEY_DOWN, ord('j')):
                     delta = -1 if key in (curses.KEY_UP, ord('k')) else 1
@@ -1332,6 +1393,23 @@ class App:
                     self.start(action)
                 elif kind == 'result':
                     self.refresh()
+            return
+        if self.page == 'import_cli':
+            if character is not None and character.isprintable():
+                if len(self.input_text) < 4096:
+                    self.input_text += character
+            elif key == 27:
+                self.input_text = ''
+                self.import_review = None
+                self.goto(self.import_return)
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                self.input_text = self.input_text[:-1]
+            elif key == 21:
+                self.input_text = ''
+            elif key in (10, 13, curses.KEY_ENTER):
+                self.start('import:preview')
+            elif len(self.input_text) < 4096 and 32 <= key < 127:
+                self.input_text += chr(key)
             return
         if self.page == 'wizard' and self.wizard['stage'] == 'name':
             if key == 27:
@@ -1390,7 +1468,13 @@ class App:
             while self.running:
                 self.poll()
                 self.draw()
-                key = self.screen.getch()
+                if self.page == 'import_cli':
+                    try:
+                        key = self.screen.get_wch()
+                    except curses.error:
+                        key = -1
+                else:
+                    key = self.screen.getch()
                 if key != -1:
                     self.key(key)
         except KeyboardInterrupt:

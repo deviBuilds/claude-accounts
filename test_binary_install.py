@@ -31,6 +31,8 @@ class BinaryInstallTests(unittest.TestCase):
             self.assertEqual(runtime.command(script, '--status-json'), [sys.executable, '--desktop-helper', '--status-json'])
             self.assertEqual(runtime.command(Path('/example/rotation.py'), '--tick'),
                              [sys.executable, '--rotation-helper', '--tick'])
+            self.assertEqual(runtime.command(Path('/example/cli_import.py'), 'b', '/tmp/login file.json'),
+                             [sys.executable, '--cli-import-helper', 'b', '/tmp/login file.json'])
             self.assertEqual(runtime.command(Path('/example/onboarding.py'), 'prepare', 'work'),
                              [sys.executable, '--onboarding-helper', 'prepare', 'work'])
             self.assertEqual(runtime.command(Path('/example/codex_accounts.py'), '--status-json'),
